@@ -6,7 +6,7 @@ HOW TO USE:
 Option A) open your system console and type 'python ' followed by the path to this script and the path of the gcode file. This will overwrite the file.
 Option B) open PrusaSlicer, go to print-settings-tab -> output-options. Locate the window for post-processing-script.
     In that window enter: the full path to your python exe, an empty space, and the full path to this script.
-    If the either path contains any empty spaces, mask them as described here: https://manual.slic3r.org/advanced/post-processing
+    If either path contains any empty spaces, mask them as described here: https://manual.slic3r.org/advanced/post-processing
 =>PrusaSlicer will execute the script after the export of the Gcode, therefore the view in the window wont change. Open the finished gcode file to see the results.
 If you want to change generation settings: Scroll to 'Parameter' section. Settings from PrusaSlicer will be extracted automatically from the gcode.
 Requirements:
@@ -26,6 +26,8 @@ Known issues:
 #!/usr/bin/python
 import sys
 import os
+import argparse
+import re
 from shapely import Point, Polygon, LineString, GeometryCollection, MultiLineString, MultiPolygon
 from shapely.ops import nearest_points
 from shapely.ops import linemerge, unary_union
@@ -105,7 +107,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
     gCodeSettingDict=readSettingsFromGCode2dict(gCodeLines,{"Fallback_nozzle_diameter":0.4,"Fallback_filament_diameter":1.75}) #ADD FALLBACK VALUES HERE
     parameters=makeFullSettingDict(gCodeSettingDict)
     if not checkforNecesarrySettings(gCodeSettingDict):
-        warnings.warn("Incompatible PursaSlicer-Settings used!")
+        warnings.warn("Incompatible PrusaSlicer-Settings used!")
         input("Can not run script, gcode unmodified. Press enter to close.")
         raise ValueError("Incompatible Settings used!")
     layerobjs=[]
@@ -329,10 +331,12 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                         for cmdline in arcline:
                                             modifiedlayer.lines.append(cmdline)
                                 isInjected=True
-                                #add restored pre-injected tool position
+                                #travel to restored pre-injected tool position
                                 for id in reversed(range(injectionStart)):
-                                    if "X" in layer.lines[id]:
-                                        modifiedlayer.lines.append(layer.lines[id])
+                                    if layer.lines[id].startswith("G1 X"):
+                                        modifiedlayer.lines.append(retractGCode(retract=True, kwargs=parameters)) # retract
+                                        modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters)) # travel
+                                        modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters)) # extrude
                                         break
                         if layer.oldpolys:
                             if ";TYPE" in line and not hilbertIsInjected:# startpoint of solid infill: print all hilberts from here.
@@ -344,8 +348,10 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                 modifiedlayer.lines.extend(hilbertGCode)
                                 #add restored pre-injected tool position
                                 for id in reversed(range(injectionStart)):
-                                    if "X" in layer.lines[id]:
-                                        modifiedlayer.lines.append(layer.lines[id])
+                                    if layer.lines[id].startswith("G1 X"):
+                                        modifiedlayer.lines.append(retractGCode(retract=True, kwargs=parameters)) # retract
+                                        modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters)) # travel
+                                        modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters)) # extrude
                                         break
                         if "G1 F" in line.split(";")[0]:#special block-speed-command
                             curPrintSpeed=line
@@ -719,7 +725,6 @@ class Layer():
                             self.deleteTheseInfills.append(idp)
                             break
                     if self.parameters.get("PrintDebugVerification"):print(f"Layer {self.layernumber}: Poly{idp} is not close enough to overhang perimeters")
-
 
     def prepareDeletion(self,featurename:str="Bridge",polys:list=None)->None:
         if not polys:
@@ -1171,6 +1176,7 @@ def arc2GCode(arcline:LineString,eStepsPerMM:float,arcidx=None,kwargs={})->list:
                             kwargs.get("ArcMinPrintSpeed",1*60),kwargs.get('ArcPrintSpeed',2*60)) # *60 bc unit conversion:mm/s=>mm/min
     for idp,p in enumerate(pts):
         if idp==0:
+            GCodeLines.append(retractGCode(retract=True,kwargs=kwargs)) # Retract before starting this next arc. We don't retract after the last arc!
             p1=p
             GCodeLines.append(f";Arc {arcidx if arcidx else ' '} Length:{arcline.length}\n")
             GCodeLines.append(p2GCode(p,F=kwargs.get('ArcTravelFeedRate',100*60)))#feedrate is mm/min...
@@ -1183,7 +1189,6 @@ def arc2GCode(arcline:LineString,eStepsPerMM:float,arcidx=None,kwargs={})->list:
                 p1=p
         if idp==len(pts)-1:
             GCodeLines.append(p2GCode(pExtend,E=extDist*eStepsPerMM))#extend arc tangentially for better bonding between arcs
-            GCodeLines.append(retractGCode(retract=True,kwargs=kwargs))
     return GCodeLines
 
 def hilbert2GCode(allhilbertpts:list,parameters:dict,layerheight:float):
@@ -1204,15 +1209,37 @@ def hilbert2GCode(allhilbertpts:list,parameters:dict,layerheight:float):
     hilbertGCode.append(retractGCode(True,parameters))
     return hilbertGCode
 
+def line2TravelMove(line:str, parameters:dict)->str:
+    if "E0 " in line or "E0\n" in line:
+        return line # this is already a travel move
+    travelstr=f"F{parameters.get('travel_speed')*60}"
+    if not "E" in line:
+        line=line.replace("\n", " E0 " + travelstr + "\n") # there was no extrusion code, lets add one just to keep tidy
+        return line 
+    regex=r"E\d*\.?\d*" # for an explanation of this RegEx, paste it into https://regex101.com/
+    line=re.sub(regex, "E0 " + travelstr, line) # replaces any extrusion code with E0, followed by travelstr
+    return line
+
 def _warning(message,category = UserWarning, filename = '', lineno = -1,*args, **kwargs):
     print(f"{filename}:{lineno}: {message}")
 warnings.showwarning = _warning
 
 ################################# MAIN EXECUTION #################################
 ##################################################################################
-if __name__=="__main__":
-    gCodeFileStream,path2GCode = getFileStreamAndPath()
-    skipInput=False
-    if platform.system()!="Windows":
-        skipInput=True
-    main(gCodeFileStream,path2GCode, skipInput)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Process overhangs within PrusaSlicer G-code files into circular arcs.")
+    parser.add_argument('path', type=str, help='Path to the G-code file')
+    parser.add_argument('--skip-input', action='store_true', help='Skip any user input prompts (non-Windows only)')
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # Get file stream and path based on the provided path
+    gCodeFileStream, path2GCode = getFileStreamAndPath(args.path)
+
+    # Determine whether to skip input based on the platform and command line argument
+    skipInput = args.skip_input or platform.system() != "Windows"
+
+    # Call the main function with the arguments
+    main(gCodeFileStream, path2GCode, skipInput)
