@@ -401,17 +401,13 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
 ################################# HELPER FUNCTIONS GCode->Polygon #################################
 ###################################################################################################
 
-def getFileStreamAndPath(read=True):
-    if len(sys.argv) != 2:
-        print("Usage: python3 ex1.py <filename>")
-        sys.exit(1)
-    filepath = sys.argv[1]
+def getFileStreamAndPath(path, read=True):
     try:
         if read:
-            f = open(filepath, "r")
+            f = open(path, "r")
         else:
-            f=open(filepath, "w")
-        return f,filepath
+            f=open(path, "w")
+        return f,path
     except IOError:
         input("File not found.Press enter.")
         sys.exit(1)
