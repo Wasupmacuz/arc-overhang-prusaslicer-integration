@@ -28,7 +28,7 @@ import sys
 import os
 import argparse
 import re
-from shapely import Point, Polygon, LineString, GeometryCollection, MultiLineString, MultiPolygon
+from shapely import Point, Polygon, LineString, GeometryCollection, MultiLineString, MultiPolygon, is_prepared, prepare, destroy_prepared, contains_xy
 from shapely.ops import nearest_points
 from shapely.ops import linemerge, unary_union
 import matplotlib.pyplot as plt
@@ -153,6 +153,8 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                     prevLayer.makeExternalPerimeter2Polys()
                     arcOverhangGCode=[]
                     for poly in layer.validpolys:
+                        if not is_prepared(poly):
+                            prepare(poly)
                         #make parameters more readable
                         MaxDistanceFromPerimeter=parameters.get("MaxDistanceFromPerimeter") # how much 'bumpiness' you accept in the outline. Lower will generate more small arcs to follow the perimeter better (corners!). Good practice: 2 perimeters+ threshold of 2width=minimal exact touching (if rMin satisfied)
                         rMax=parameters.get("RMax",15)
@@ -169,6 +171,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         if startLineString is None:
                             warnings.warn("Skipping Polygon because no StartLine Found")
                             continue
+                        prepare(boundaryWithOutStartLine)
                         startpt=getStartPtOnLS(startLineString,parameters)
                         remainingSpace=poly
                         #plot_geometry(thresholdedpoly)
@@ -200,6 +203,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                 if len(concentricArcs)<parameters.get("MinStartArcs"):
                                     warnings.warn("Initialization Error: no concentric Arc could be generated at startpoints, moving on")
                                     continue
+                        destroy_prepared(boundaryWithOutStartLine)
                         arcBoundarys=getArcBoundarys(concentricArcs)
                         finalarcs.append(concentricArcs[-1])
                         for arc in concentricArcs:
@@ -258,6 +262,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                 print("the arc-generation got stuck at a thight spot during startup. Used Automated fix:set ArcCenterOffset to 0")
                             if triedFixing and len(finalarcs)==1 and idx==1:
                                 print("fix did not work.")
+                        destroy_prepared(poly)
                         #poly finished
                         remain2FillPercent=remainingSpace.area/poly.area*100
                         if  remain2FillPercent> 100-parameters.get("WarnBelowThisFillingPercentage"):
@@ -298,6 +303,8 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                     layer.solidPolys=layer.mergePolys(layer.solidPolys)
                     allhilbertpts=[]
                     for poly in layer.solidPolys:
+                        if not is_prepared(poly):
+                            prepare(poly)
                         hilbertpts=layer.createHilbertCurveInPoly(poly)
                         allhilbertpts.extend(hilbertpts)
                         if parameters.get("plotEachHilbert"):
@@ -306,6 +313,8 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                             plt.title("Debug")
                             plt.axis('square')
                             plt.show()
+                        destroy_prepared(poly)
+                        
                 if modify:
                     modifiedlayer=Layer([],parameters,idl) # copy the other infos if needed: future to do
                     isInjected=False
@@ -666,10 +675,13 @@ class Layer():
                 plt.show()
     def verifySolidInfillPts(self,infillpts:list)->bool:
         '''Verify SollidInfillPts by checking if >=1 of the Points is inside the desired polygon-locations.'''
-        for p in infillpts:
-                for poly in self.oldpolys:
-                    if poly.contains(p):
-                        return True
+        for poly in self.oldpolys:
+            if not is_prepared(poly):
+                prepare(poly)
+            for p in infillpts:
+                if contains_xy(poly, p.x, p.y):
+                    return True
+            destroy_prepared(poly)
         return False
 
     def spotBridgeInfill(self)->None:
@@ -703,6 +715,7 @@ class Layer():
             if not allowedSpacePolygon:
                 input(f"Layer {self.layernumber}: no allowed space Polygon provided to layer obj, unable to run script. Press Enter.")
                 raise ValueError(f"Layer {self.layernumber}: no allowed space Polygon provided to layer obj")
+            prepare(allowedSpacePolygon)
             if self.parameters.get("PrintDebugVerification"):print("No of Polys:",len(self.polys))
             for idp,poly in enumerate(self.polys):
                 if not poly.is_valid:
@@ -721,6 +734,7 @@ class Layer():
                             self.deleteTheseInfills.append(idp)
                             break
                     if self.parameters.get("PrintDebugVerification"):print(f"Layer {self.layernumber}: Poly{idp} is not close enough to overhang perimeters")
+            destroy_prepared(allowedSpacePolygon)
 
     def prepareDeletion(self,featurename:str="Bridge",polys:list=None)->None:
         if not polys:
@@ -732,14 +746,17 @@ class Layer():
             deleteThis=False
             if featurename in ftype:
                 for poly in polys:
+                    if not is_prepared(poly):
+                        prepare(poly)
                     for line in lines:
                         p=getPtfromCmd(line)
                         if p:
-                            if poly.contains(p):
+                            if contains_xy(poly, p.x, p.y):
                                 deleteThis=True
                                 break
                         if deleteThis:
                             break
+                    destroy_prepared(poly)
                 if deleteThis:
                     if idf<len(self.features)-1:
                         end=self.features[idf+1][2]-1 # TODO: prevent deletion of last travel move.
@@ -775,17 +792,16 @@ class Layer():
         movY=self.layernumber%2*w/a
         x=locs[:,0]*scale+minX-movX
         y=locs[:,1]*scale+minY-movY
-        hilbertPointsRaw=[[xi,yi] for xi,yi in zip(x.tolist(),y.tolist())]
+        hilbertPointsRaw=[(xi,yi) for xi,yi in zip(x,y)]
         noEl=int(np.ceil(mmBetweenTravels/scale))
         buff=[]
         compositeList=[]
         #divide in subset of n elements and shuffle them to prevent localized overheating.
-        for el in hilbertPointsRaw:
-            p=Point(el)
-            if p.within(poly):
-                buff.append(p)
+        for p in hilbertPointsRaw:
+            if contains_xy(poly, p[0], p[1]):
+                buff.append(Point(p))
             else:
-                if len(buff)>5:#neglegt very small pieces
+                if len(buff)>5:#neglect very small pieces
                     if len(buff)>noEl*1.7:
                         compositeList.extend([buff[x:x+noEl] for x in range(0, len(buff),noEl)])
                     else:
@@ -949,10 +965,14 @@ def get_farthest_point(arc:Polygon, base_poly:Polygon, remaining_empty_space:Pol
     longest_distance = -1
     farthest_point = Point([0, 0])
     pointFound=False
+    
+    buffer_poly = remaining_empty_space.buffer(1e-2)
+    prepare(buffer_poly)
+
     # Handle input for polygons and LineString
     # The first arc begins on a LineString rather than a Polygon
     if arc.geom_type == 'Polygon':
-        arc_coords = arc.exterior.coords
+        arc_coords = np.array(arc.exterior.coords)
     elif arc.geom_type == 'LineString':
         arc_coords = np.linspace(list(arc.coords)[0], list(arc.coords)[1])
     else:
@@ -962,15 +982,25 @@ def get_farthest_point(arc:Polygon, base_poly:Polygon, remaining_empty_space:Pol
         plot_geometry(arc,"r")
         plt.axis('square')
         plt.show()
+
+    # Bounding box of the base polygon
+    min_x, min_y, max_x, max_y = base_poly.bounds
+
+    # Bounding box check for limiting checks
+    arc_coords = arc_coords[(arc_coords[:,0] >= min_x) & (arc_coords[:,0] <= max_x) & 
+                            (arc_coords[:,1] >= min_y) & (arc_coords[:,1] <= max_y)]
     # For every point in the arc, find out which point is farthest away from the base polygon
-    for p in list(arc_coords):
-        distance = Point(p).distance(base_poly.boundary)
-        if (distance > longest_distance) and ((remaining_empty_space.buffer(1e-2).contains(Point(p)))):
+    for p in arc_coords:
+        point = Point(p)
+        distance = point.distance(base_poly.boundary)
+        if distance > longest_distance and contains_xy(buffer_poly, p[0], p[1]):
             longest_distance = distance
-            farthest_point = Point(p)
+            farthest_point = point
             pointFound = True
-    point_on_poly = nearest_points(base_poly, farthest_point)[0]
+
     if pointFound:
+        # Use nearest_points from shapely.ops
+        point_on_poly = nearest_points(base_poly, farthest_point)[0]
         return farthest_point, longest_distance, point_on_poly
     else:
         return None, None, None
@@ -1011,7 +1041,7 @@ def generateMultipleConcentricArcs(startpt:Point,rMin:float,rMax:float, boundary
     while r<=rMax:
         arcObj=Arc(startpt,r,kwargs=kwargs)
         arc=arcObj.generateConcentricArc(startpt,remainingSpace)
-        if arc.intersects(boundaryLineString) and not kwargs.get("UseLeastAmountOfCenterPoints",False):
+        if boundaryLineString.intersects(arc) and not kwargs.get("UseLeastAmountOfCenterPoints",False):
             break
         arcs.append(arcObj)
         #print("True Arc type:",type(arc4gcode))
