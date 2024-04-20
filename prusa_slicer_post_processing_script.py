@@ -171,6 +171,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         if startLineString is None:
                             warnings.warn("Skipping Polygon because no StartLine Found")
                             continue
+                        prepare(startLineString)
                         prepare(boundaryWithOutStartLine)
                         startpt=getStartPtOnLS(startLineString,parameters)
                         remainingSpace=poly
@@ -203,6 +204,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                 if len(concentricArcs)<parameters.get("MinStartArcs"):
                                     warnings.warn("Initialization Error: no concentric Arc could be generated at startpoints, moving on")
                                     continue
+                        destroy_prepared(startLineString)
                         destroy_prepared(boundaryWithOutStartLine)
                         arcBoundarys=getArcBoundarys(concentricArcs)
                         finalarcs.append(concentricArcs[-1])
@@ -216,6 +218,8 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         idx=0
                         safetyBreak=0
                         triedFixing=False
+                        if not is_prepared(poly.boundary):
+                            prepare(poly.boundary)
                         while idx<len(finalarcs):
                             sys.stdout.write("\033[F") #back to previous line
                             sys.stdout.write("\033[K") #clear line
@@ -263,6 +267,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                             if triedFixing and len(finalarcs)==1 and idx==1:
                                 print("fix did not work.")
                         destroy_prepared(poly)
+                        destroy_prepared(poly.boundary)
                         #poly finished
                         remain2FillPercent=remainingSpace.area/poly.area*100
                         if  remain2FillPercent> 100-parameters.get("WarnBelowThisFillingPercentage"):
