@@ -353,7 +353,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                         modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters)) # extrude
                                         break
                         if layer.oldpolys:
-                            if ";TYPE" in line and not hilbertIsInjected:# startpoint of solid infill: print all hilberts from here.
+                            if ";TYPE:Solid" in line and not hilbertIsInjected:# startpoint of solid infill: print all hilberts from here.
                                 hilbertIsInjected=True
                                 injectionStart=idline
                                 modifiedlayer.lines.append(";TYPE:Solid infill\n")
@@ -388,6 +388,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                     if messedWithFan:
                         modifiedlayer.lines.append(f"M106 S{layer.fansetting:.0f}\n")
                         messedWithFan=False
+                    modifiedlayer.extract_features()
                     layerobjs[idl]=modifiedlayer  # overwrite the infos
     if gcodeWasModified:
         overwrite=True
