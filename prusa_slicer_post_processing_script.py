@@ -25,11 +25,10 @@ Known issues:
 """
 #!/usr/bin/python
 import sys
-import os
 import argparse
 import re
-from shapely import Point, Polygon, LineString, GeometryCollection, MultiLineString, MultiPolygon, is_prepared, prepare, destroy_prepared, contains_xy
-from shapely.ops import nearest_points
+from typing import Any
+from shapely import Point, Polygon, LineString, MultiLineString, is_prepared, prepare, destroy_prepared, contains_xy
 from shapely.ops import linemerge, unary_union
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,12 +37,12 @@ import warnings
 import random
 import platform
 #from hilbertcurve.hilbertcurve import HilbertCurve
-from hilbert import decode, encode
+from hilbert import decode
 ########## Parameters  - adjust values here as needed ##########
 def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
     """Merge Two Dictionarys and set some keys/values explicitly"""
     #the slicer-settings will be imported from GCode. But some are Arc-specific and need to be adapted by you.
-    AddManualSettingsDict={
+    AddManualSettingsDict: dict[str, Any]={
         #adapt these settings as needed for your specific geometry/printer:
         "CheckForAllowedSpace":False,# use the following x&y filter or not
         "AllowedSpaceForArcs": Polygon([[0,0],[500,0],[500,500],[0,500]]),#have control in which areas Arcs shall be generated
@@ -52,7 +51,8 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "ArcPrintSpeed":1.5*60, #Unit:mm/min
         #"ArcPrintTemp":gCodeSettingDict.get("temperature"), # unit: Celsius
         "ArcTravelFeedRate":30*60, # slower travel speed, Unit:mm/min
-        "ExtendIntoPerimeter":1.5*gCodeSettingDict.get("perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
+        "ExtendArcsIntoPerimeter":0.5, #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
+        "ExtendHilbertIntoPerimeter":1*gCodeSettingDict.get("perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for hilbert curve generation, put higher to go through small passages. Unit:mm
         "MaxDistanceFromPerimeter":2*gCodeSettingDict.get("perimeter_extrusion_width"),#Control how much bumpiness you allow between arcs and perimeter. lower will follow perimeter better, but create a lot of very small arcs. Should be more that 1 Arcwidth! Unit:mm
         "MinArea":5*10,#Unit:mm2
         "MinBridgeLength":5,#Unit:mm
@@ -67,7 +67,8 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "aboveArcsPerimeterPrintSpeed":3*60, #Unit: mm/min
         "applyAboveFanSpeedToWholeLayer":True,
         "CoolingSettingDetectionDistance":5, #if the gcode line is closer than this distance to an infill polygon the cooling settings will be applied. Unit:mm
-        "specialCoolingZdist":3, #use the special cooling XX mm above the arcs. Set to a negative value to disable (not recommended).
+        "specialCoolingZdist":3, #use the special cooling XX mm above the arcs.
+        "doSpecialCooling":False, #use to enable/disable hilbert curves and slower movement above arc overhangs. Should be `True` to prevent warping
 
         #advanced Settings, you should not need to touch these.
         "ArcExtrusionMultiplier":1.35,
@@ -104,17 +105,17 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
 def main(gCodeFileStream,path2GCode,skipInput)->None:
     '''Here all the work is done, therefore it is much to long.'''
     gCodeLines=gCodeFileStream.readlines()
-    gCodeSettingDict=readSettingsFromGCode2dict(gCodeLines,{"Fallback_nozzle_diameter":0.4,"Fallback_filament_diameter":1.75}) #ADD FALLBACK VALUES HERE
-    parameters=makeFullSettingDict(gCodeSettingDict)
-    if not checkforNecesarrySettings(gCodeSettingDict):
-        warnings.warn("Incompatible PrusaSlicer-Settings used!")
+    gCodeSettingDict=readSettingsFromGCode2dict(gcodeLines=gCodeLines,fallbackValuesDict={"Fallback_nozzle_diameter":0.4,"Fallback_filament_diameter":1.75}) #ADD FALLBACK VALUES HERE
+    parameters=makeFullSettingDict(gCodeSettingDict=gCodeSettingDict)
+    if not checkforNecesarrySettings(gCodeSettingDict=gCodeSettingDict):
+        warnings.warn(message="Incompatible PrusaSlicer-Settings used!")
         input("Can not run script, gcode unmodified. Press enter to close.")
         raise ValueError("Incompatible Settings used!")
     layerobjs=[]
     gcodeWasModified=False
     numOverhangs=0
     if gCodeFileStream:
-        layers=splitGCodeIntoLayers(gCodeLines)
+        layers=splitGCodeIntoLayers(gcode=gCodeLines)
         gCodeFileStream.close()
         print("layers:",len(layers))
         lastfansetting=0 # initialize variable
@@ -131,7 +132,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
             else:
                 layer.extract_features()
                 layer.spotBridgeInfill()
-                layer.makePolysFromBridgeInfill(extend=parameters.get("ExtendIntoPerimeter",1))
+                layer.makePolysFromBridgeInfill(extend=parameters.get("ExtendArcsIntoPerimeter",1))
                 layer.polys=layer.mergePolys()
                 layer.verifyinfillpolys()
 
@@ -158,7 +159,6 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         #make parameters more readable
                         MaxDistanceFromPerimeter=parameters.get("MaxDistanceFromPerimeter") # how much 'bumpiness' you accept in the outline. Lower will generate more small arcs to follow the perimeter better (corners!). Good practice: 2 perimeters+ threshold of 2width=minimal exact touching (if rMin satisfied)
                         rMax=parameters.get("RMax",15)
-                        pointsPerCircle=parameters.get("PointsPerCircle",80)
                         arcWidth=parameters.get("ArcWidth")
                         rMin=parameters.get("ArcCenterOffset")+arcWidth/1.5
                         rMinStart=parameters.get("nozzle_diameter")
@@ -170,6 +170,8 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         startLineString,boundaryWithOutStartLine=prevLayer.makeStartLineString(poly,parameters)
                         if startLineString is None:
                             warnings.warn("Skipping Polygon because no StartLine Found")
+                            destroy_prepared(poly)
+                            layer.failedArcGenPolys.append(poly)
                             continue
                         prepare(startLineString)
                         prepare(boundaryWithOutStartLine)
@@ -203,14 +205,18 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                             break
                                 if len(concentricArcs)<parameters.get("MinStartArcs"):
                                     warnings.warn("Initialization Error: no concentric Arc could be generated at startpoints, moving on")
+                                    destroy_prepared(poly)
+                                    layer.failedArcGenPolys.append(poly)
                                     continue
                         destroy_prepared(startLineString)
                         destroy_prepared(boundaryWithOutStartLine)
                         arcBoundarys=getArcBoundarys(concentricArcs)
                         finalarcs.append(concentricArcs[-1])
+                        destroy_prepared(remainingSpace)
                         for arc in concentricArcs:
                             remainingSpace=remainingSpace.difference(arc.poly.buffer(1e-2))
                             arcs.append(arc)
+                        prepare(remainingSpace)
                         for arcboundary in arcBoundarys:
                             arcs4gcode.append(arcboundary)
 
@@ -220,15 +226,15 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         triedFixing=False
                         if not is_prepared(poly.boundary):
                             prepare(poly.boundary)
+                        text=str()
                         while idx<len(finalarcs):
-                            sys.stdout.write("\033[F") #back to previous line
-                            sys.stdout.write("\033[K") #clear line
-                            print("while executed:",idx, len(finalarcs))#\r=Cursor at linestart
+                            text=f"while loop executed: {idx}, {len(finalarcs)}" #update text
+                            print(text, end="\r", flush=True)#\r=Cursor at linestart
                             curArc=finalarcs[idx]
                             if curArc.poly.geom_type=="MultiPolygon":
-                                farthestPointOnArc,longestDistance,NearestPointOnPoly=get_farthest_point(curArc.poly.geoms[0],poly,remainingSpace)
+                                farthestPointOnArc,longestDistance=get_farthest_point(curArc.poly.geoms[0],poly,remainingSpace)
                             else:
-                                farthestPointOnArc,longestDistance,NearestPointOnPoly=get_farthest_point(curArc.poly,poly,remainingSpace)
+                                farthestPointOnArc,longestDistance=get_farthest_point(curArc.poly,poly,remainingSpace)
                             if not farthestPointOnArc or longestDistance<MaxDistanceFromPerimeter:#no more pts on arc
                                 idx+=1 #go to next arc
                                 continue
@@ -237,9 +243,11 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                             arcBoundarys=getArcBoundarys(concentricArcs)
                             #print(f"number of concentric arcs generated:",len(concentricArcs))
                             if len(concentricArcs)>0:
+                                destroy_prepared(remainingSpace)
                                 for arc in concentricArcs:
                                     remainingSpace=remainingSpace.difference(arc.poly.buffer(1e-2))
                                     arcs.append(arc)
+                                prepare(remainingSpace)
                                 finalarcs.append(concentricArcs[-1])
                                 for arcboundary in arcBoundarys:
                                     arcs4gcode.append(arcboundary)
@@ -266,6 +274,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                 print("the arc-generation got stuck at a thight spot during startup. Used Automated fix:set ArcCenterOffset to 0")
                             if triedFixing and len(finalarcs)==1 and idx==1:
                                 print("fix did not work.")
+                        print(text) # reprint last while loop text without flushing
                         destroy_prepared(poly)
                         destroy_prepared(poly.boundary)
                         #poly finished
@@ -300,11 +309,11 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         gcodeWasModified=True
 
                 #apply special cooling settings:
-                if len(layer.oldpolys)>0 and gcodeWasModified:
+                if parameters.get("doSpecialCooling") and len(layer.oldpolys)>0 and gcodeWasModified:
                     modify=True
                     print("oldpolys found in layer:",idl)
                     layer.spotSolidInfill()
-                    layer.makePolysFromSolidInfill(extend=parameters.get("ExtendIntoPerimeter"))
+                    layer.makePolysFromSolidInfill(extend=parameters.get("ExtendHilbertIntoPerimeter"))
                     layer.solidPolys=layer.mergePolys(layer.solidPolys)
                     allhilbertpts=[]
                     for poly in layer.solidPolys:
@@ -321,7 +330,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                         destroy_prepared(poly)
                         
                 if modify:
-                    modifiedlayer=Layer([],parameters,idl) # copy the other infos if needed: future to do
+                    modifiedlayer=Layer([],parameters,idl)
                     isInjected=False
                     hilbertIsInjected=False
                     curPrintSpeed="G1 F600"
@@ -329,14 +338,14 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                     messedWithFan=False
                     if gcodeWasModified:
                         layer.prepareDeletion(featurename="Bridge",polys=layer.validpolys)
-                        if len(layer.oldpolys)>0:
+                        if len(layer.oldpolys)>0 and parameters.get("doSpecialCooling"):
                             layer.prepareDeletion(featurename=":Solid",polys=layer.oldpolys)
                     #print("FEATURES:",[(f[0],f[2]) for f in layer.features])
                     injectionStart=None
                     print("modifying GCode")
                     for idline,line in enumerate(layer.lines):
                         if layer.validpolys:
-                            if ";TYPE" in line and not isInjected:#inject arcs at the very start
+                            if line.startswith(";TYPE") and not isInjected:#inject arcs at the very start
                                 injectionStart=idline
                                 modifiedlayer.lines.append(";TYPE:Arc infill\n")
                                 modifiedlayer.lines.append(f"M106 S{parameters.get('ArcFanSpeed')}\n")
@@ -352,8 +361,8 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                         modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters)) # travel
                                         modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters)) # extrude
                                         break
-                        if layer.oldpolys:
-                            if ";TYPE:Solid" in line and not hilbertIsInjected:# startpoint of solid infill: print all hilberts from here.
+                        if layer.oldpolys and parameters.get("doSpecialCooling"):
+                            if line.startswith(";TYPE:Solid") and not hilbertIsInjected:# startpoint of solid infill: print all hilberts from here.
                                 hilbertIsInjected=True
                                 injectionStart=idline
                                 modifiedlayer.lines.append(";TYPE:Solid infill\n")
@@ -367,7 +376,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                                         modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters)) # travel
                                         modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters)) # extrude
                                         break
-                        if "G1 F" in line.split(";")[0]:#special block-speed-command
+                        if line.split(";")[0].startswith("G1 F"):#special block-speed-command
                             curPrintSpeed=line
                         if layer.exportThisLine(idline):
                             if layer.isClose2Bridging(line,parameters.get("CoolingSettingDetectionDistance")):
@@ -395,7 +404,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
         if parameters.get("Path2Output"):
             path2GCode=parameters.get("Path2Output")
             overwrite=False
-        f=open(path2GCode,"w")
+        f=open(path2GCode,"w",encoding="UTF-8")
         if overwrite:
             print("overwriting file")
         else:
@@ -419,9 +428,9 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
 def getFileStreamAndPath(path, read=True):
     try:
         if read:
-            f = open(path, "r")
+            f = open(path, "r", encoding="UTF-8")
         else:
-            f=open(path, "w")
+            f=open(path, "w", encoding="UTF-8")
         return f,path
     except IOError:
         input("File not found.Press enter.")
@@ -431,7 +440,7 @@ def splitGCodeIntoLayers(gcode:list)->list:
     gcode_list = []
     buff=[]
     for linenumber,line in enumerate(gcode):
-        if ";LAYER_CHANGE" in line:
+        if line.startswith(";LAYER_CHANGE"):
             gcode_list.append(buff)
             buff=[]
             buff.append(line)
@@ -457,17 +466,19 @@ def getPtfromCmd(line:str)->Point:
         p=None
     return p
 
-def makePolygonFromGCode(lines:list)->Polygon:
+def makePolygonFromGCode(lines:list)->Polygon | None:
     pts=[]
     wiping=False
     for line in lines:
+        if isTravelMove(line):
+            break
+
         if line.startswith(";WIPE_END"):
             wiping=False
+        elif wiping:
+            continue
         elif line.startswith(";WIPE_START"):
             wiping=True
-
-        if wiping:
-            continue
 
         if line.startswith("G1 X"):
             p=getPtfromCmd(line)
@@ -478,6 +489,11 @@ def makePolygonFromGCode(lines:list)->Polygon:
     else:
         #print("invalid poly: not enough pts")
         return None
+    
+def isTravelMove(line:str)->bool:
+    if line.startswith("G1 E") or (line.startswith("G1 X") and not "E" in line):
+        return True
+    return False
 
 ################################# CLASSES #################################
 ###########################################################################
@@ -490,6 +506,7 @@ class Layer():
         self.polys=[]
         self.validpolys=[]
         self.extPerimeterPolys=[]
+        self.failedArcGenPolys=[]
         self.binfills=[]
         self.features=[]
         self.oldpolys=[]
@@ -505,22 +522,17 @@ class Layer():
         currenttype=""
         start=0
         for idl,line in enumerate(self.lines):
-            if ";TYPE:" in line:
+            if line.startswith(";TYPE:"):
                 if currenttype:
                     self.features.append([currenttype,buff,start])
                     buff=[]
                     start=idl
-
-                    if self.lines[start - 1].startswith("G1 E") or not "E" in self.lines[start - 1]: # if a travel move came right before this feature:
-                        start -= 1
-                        while not "E" in self.lines[start - 1]: # include this travel move in the feature (excluding the first retraction step, if applicable)
-                            start -= 1
                 currenttype=line
             else:
                 buff.append(line)
         self.features.append([currenttype,buff,start])# fetch last one
-    def addZ(self,z:float=None)->None:
-        if z:
+    def addZ(self,z:float=0.0)->None:
+        if z != 0.0:
             self.z=z
         else:
             for l in self.lines:
@@ -539,7 +551,7 @@ class Layer():
                 return
         warnings.warn(f"Layer {self.layernumber}: no height found, using layerheight default!")
         self.height=self.parameters.get("layer_height")
-    def getRealFeatureStartPoint(self,idf:int)->Point:
+    def getRealFeatureStartPoint(self,idf:int)->Point | None:
         """ since GCode only stores destination of the move, the origin of the first move has to be included."""
         if idf<1:
             return None
@@ -563,8 +575,8 @@ class Layer():
                             linesWithStart.append(p2GCode(pt))
                         else:
                             warnings.warn(f"Layer {self.layernumber}: Could not fetch real StartPoint.")
+                    extPerimeterIsStarted=True
                 linesWithStart=linesWithStart+lines
-                extPerimeterIsStarted=True
             if extPerimeterIsStarted and (idf==len(self.features)-1 or not ("External" in ftype or "Overhang" in ftype)) :#finish the poly if end of featurelist or different feature
                 poly=makePolygonFromGCode(linesWithStart)
                 if poly:
@@ -635,7 +647,6 @@ class Layer():
         for idf,fe in enumerate(self.features):
             ftype=fe[0]
             lines=fe[1]
-            start=fe[2]
             pts=[]
             isWipeMove=False
             travelstr=f"F{self.parameters.get('travel_speed')*60}"
@@ -644,7 +655,7 @@ class Layer():
                     sp=self.getRealFeatureStartPoint(idf)
                     if sp:pts.append(sp)
                 for line in lines:
-                    if "G1" in line and (not isWipeMove):
+                    if line.startswith("G1") and (not isWipeMove):
                         if (not "E" in line) and travelstr in line and splitAtTravel:
                             #print(f"Layer {self.layernumber}: try to split feature. No. of pts before:",len(pts))
                             if len(pts)>=2:#make at least 1 ls
@@ -654,12 +665,12 @@ class Layer():
                             p=getPtfromCmd(line)
                             if p:
                                 pts.append(p)
-                    if 'WIPE_START' in line:
+                    if line.startswith(';WIPE_START'):
                         isWipeMove=True
                         if splitAtWipe:
                             parts.append(pts)
                             pts=[]
-                    if 'WIPE_END' in line:
+                    if line.startswith(';WIPE_END'):
                         isWipeMove=False
                 if len(pts)>1:#fetch last one
                     parts.append(pts)
@@ -752,6 +763,8 @@ class Layer():
             deleteThis=False
             if featurename in ftype:
                 for poly in polys:
+                    if poly in self.failedArcGenPolys:
+                        continue
                     if not is_prepared(poly):
                         prepare(poly)
                     for line in lines:
@@ -765,7 +778,10 @@ class Layer():
                     destroy_prepared(poly)
                 if deleteThis:
                     if idf<len(self.features)-1:
-                        end=self.features[idf+1][2]-1 # TODO: prevent deletion of last travel move.
+                        end=self.features[idf+1][2]-1
+                        
+                        while isTravelMove(self.lines[end-1]) or isTravelMove(self.lines[end]): # exclude the last travel move from the deletion.
+                            end -= 1
                     else:
                         end=len(self.lines)
                     self.deletelines.append([start,end])
@@ -818,7 +834,7 @@ class Layer():
         random.shuffle(compositeList)
         return compositeList
     def isClose2Bridging(self,line:str,minDetectionDistance:float=3):
-        if not "G1" in line:
+        if not line.startswith("G1"):
             return False
         p=getPtfromCmd(line)
         if not p:
@@ -833,7 +849,7 @@ class Layer():
         return False
     def spotFanSetting(self,lastfansetting:float):
         for line in self.lines:
-            if "M106" in line.split(";")[0]:
+            if line.split(";")[0].startswith("M106"):
                 svalue=line.strip("\n").split(";")[0].split(" ")[1]
                 self.fansetting=float(svalue[1:])
                 return self.fansetting
@@ -849,8 +865,6 @@ class Arc():
         self.r=r
         self.pointsPerCircle=kwargs.get("PointsPerCircle",80)
         self.parameters=kwargs
-    def setPoly(self,poly:Polygon)->None:
-        self.poly=poly
     def extractArcBoundary(self):
         circ=create_circle(self.center,self.r,self.pointsPerCircle)
         trueArc=self.poly.boundary.intersection(circ.boundary.buffer(1e-2))
@@ -943,9 +957,8 @@ def getStartPtOnLS(ls:LineString,kwargs:dict={},choseRandom:bool=False)->Point:
     return pts[maxIndex]
 
 def create_circle(p:Point, radius:float, n:int)->Polygon:
-    x=p.x
-    y=p.y
-    return Polygon([[radius*np.sin(theta)+x, radius*np.cos(theta)+y] for theta in np.linspace(0, 2*np.pi - 2*np.pi/n, int(n))])
+    x, y = p.x, p.y
+    return Polygon([radius*np.sin(theta)+x, radius*np.cos(theta)+y] for theta in np.linspace(0, 2*np.pi - 2*np.pi/n, int(n)))
 
 def get_farthest_point(arc:Polygon, base_poly:Polygon, remaining_empty_space:Polygon):#function ported from Steven McCulloch
     """
@@ -1005,11 +1018,9 @@ def get_farthest_point(arc:Polygon, base_poly:Polygon, remaining_empty_space:Pol
             pointFound = True
 
     if pointFound:
-        # Use nearest_points from shapely.ops
-        point_on_poly = nearest_points(base_poly, farthest_point)[0]
-        return farthest_point, longest_distance, point_on_poly
+        return farthest_point, longest_distance
     else:
-        return None, None, None
+        return None, None
 
 def move_toward_point(start_point:Point, target_point:Point, distance:float)->Point:
     """Moves a point a set distance toward another point"""
@@ -1103,7 +1114,7 @@ def getArcBoundarys(concentricArcs:list)->list:
     '''Handle arcs composited from multiple parts'''
     boundarys=[]
     for arc in concentricArcs:
-        arcLine=arc.extractArcBoundary()
+        arcLine=arc.extractArcBoundary() # Fix arc extraction code. It regenerates the arc. TODO
         if type(arcLine)==type([]):
             for arc in arcLine:
                 boundarys.append(arc.arcline)
@@ -1115,23 +1126,23 @@ def readSettingsFromGCode2dict(gcodeLines:list,fallbackValuesDict:dict)->dict:
     gCodeSettingDict=fallbackValuesDict
     isSetting=False
     for line in gcodeLines:
-        if "; prusaslicer_config = begin" in line:
+        if line.startswith("; prusaslicer_config = begin"):
             isSetting=True
             continue
         if isSetting :
             setting=line.strip(";").strip("\n").split("= ")
             if len(setting)==2:
                 try:
-                    gCodeSettingDict[setting[0].strip(" ")]=literal_eval(setting[1]) # automaticly convert into int,float,...
+                    gCodeSettingDict[setting[0].strip(" ")]=literal_eval(node_or_string=setting[1]) # automaticly convert into int,float,...
                 except:
                     gCodeSettingDict[setting[0].strip(" ")]=setting[1] # leave the complex settings as strings. They shall be handled individually if necessary
             elif len(setting)>2:
                 gCodeSettingDict[setting[0].strip(" ")]=setting[1:]
-                warnings.warn(f"PrusaSlicer Setting {setting[0]} not in the expected key/value format, but added into the settings-dictionarry")
+                warnings.warn(message=f"PrusaSlicer Setting {setting[0]} not in the expected key/value format, but added into the settings-dictionarry")
             else:
                 print("Could not read setting from PrusaSlicer:",setting)
-    if "%" in str(gCodeSettingDict.get("perimeter_extrusion_width")) : #overwrite Percentage width as suggested by 5axes via github
-        gCodeSettingDict["perimeter_extrusion_width"]=gCodeSettingDict.get("nozzle_diameter")*(float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%"))/100)
+    if "%" in str(object=gCodeSettingDict.get("perimeter_extrusion_width")) : #overwrite Percentage width as suggested by 5axes via github
+        gCodeSettingDict["perimeter_extrusion_width"]=gCodeSettingDict.get("nozzle_diameter", 0.4)*(float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%"))/100)
     isWarned=False
     for key,val in gCodeSettingDict.items():
         if isinstance(val,tuple) :
@@ -1141,7 +1152,7 @@ def readSettingsFromGCode2dict(gcodeLines:list,fallbackValuesDict:dict)->dict:
             else:
                 gCodeSettingDict[key]=val[0]
                 if not isWarned:
-                    warnings.warn(f"{key} was specified as tuple/list, this is normal for using multiple extruders. For all list values First values will be used. If unhappy: Add manual fallback value by searching for ADD FALLBACK in the code. And add 'Fallback_<key>:<yourValue>' into the dictionary.")
+                    warnings.warn(message=f"{key} was specified as tuple/list, this is normal for using multiple extruders. For all list values First values will be used. If unhappy: Add manual fallback value by searching for ADD FALLBACK in the code. And add 'Fallback_<key>:<yourValue>' into the dictionary.")
                     isWarned=True
     return gCodeSettingDict
 
