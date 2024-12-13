@@ -51,9 +51,9 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "ArcPrintSpeed":1.5*60, #Unit:mm/min
         #"ArcPrintTemp":gCodeSettingDict.get("temperature"), # unit: Celsius
         "ArcTravelFeedRate":30*60, # slower travel speed, Unit:mm/min
-        "ExtendArcsIntoPerimeter":0.5, #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
+        "ExtendArcsIntoPerimeter":0.5*gCodeSettingDict.get("perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for arc generation, put higher to go through small passages. Unit:mm
         "ExtendHilbertIntoPerimeter":1*gCodeSettingDict.get("perimeter_extrusion_width"), #min=0.5extrusionwidth!, extends the Area for hilbert curve generation, put higher to go through small passages. Unit:mm
-        "MaxDistanceFromPerimeter":2*gCodeSettingDict.get("perimeter_extrusion_width"),#Control how much bumpiness you allow between arcs and perimeter. lower will follow perimeter better, but create a lot of very small arcs. Should be more that 1 Arcwidth! Unit:mm
+        "MaxDistanceFromPerimeter":1*gCodeSettingDict.get("perimeter_extrusion_width"),#Control how much bumpiness you allow between arcs and perimeter. lower will follow perimeter better, but create a lot of very small arcs. Should be more that 1 Arcwidth! Unit:mm
         "MinArea":5*10,#Unit:mm2
         "MinBridgeLength":5,#Unit:mm
         "Path2Output":r"", #leave empty to overwrite the file or write to a new file. Full path required.
@@ -68,7 +68,7 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
         "applyAboveFanSpeedToWholeLayer":True,
         "CoolingSettingDetectionDistance":5, #if the gcode line is closer than this distance to an infill polygon the cooling settings will be applied. Unit:mm
         "specialCoolingZdist":3, #use the special cooling XX mm above the arcs.
-        "doSpecialCooling":False, #use to enable/disable hilbert curves and slower movement above arc overhangs. Should be `True` to prevent warping
+        "doSpecialCooling":True, #use to enable/disable hilbert curves and slower movement above arc overhangs. Should be `True` to prevent warping
 
         #advanced Settings, you should not need to touch these.
         "ArcExtrusionMultiplier":1.35,
@@ -102,7 +102,7 @@ def makeFullSettingDict(gCodeSettingDict:dict) -> dict:
 ################################# MAIN FUNCTION #################################
 #################################################################################
 #at the top, for better reading
-def main(gCodeFileStream,path2GCode,skipInput)->None:
+def main(gCodeFileStream,path2GCode)->None:
     '''Here all the work is done, therefore it is much to long.'''
     gCodeLines=gCodeFileStream.readlines()
     gCodeSettingDict=readSettingsFromGCode2dict(gcodeLines=gCodeLines,fallbackValuesDict={"Fallback_nozzle_diameter":0.4,"Fallback_filament_diameter":1.75}) #ADD FALLBACK VALUES HERE
@@ -134,7 +134,7 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
                 layer.spotBridgeInfill()
                 layer.makePolysFromBridgeInfill(extend=parameters.get("ExtendArcsIntoPerimeter",1))
                 layer.polys=layer.mergePolys()
-                layer.verifyinfillpolys()
+                layer.verifyinfillpolys(maxDistForValidation=2*parameters.get("extrusion_width"))
 
                 #ARC GENERATION
                 if layer.validpolys:
@@ -419,8 +419,6 @@ def main(gCodeFileStream,path2GCode,skipInput)->None:
             print(f"Analysed {len(layerobjs)} Layers, but no matching overhangs found->no arcs generated. If unexpected: look if restricting settings like 'minArea' or 'MinBridgeLength' are correct.")
     #os.startfile(path2GCode, 'open')
     print("Script execution complete.")
-    if not skipInput:
-        input("Press enter to exit.")
 
 ################################# HELPER FUNCTIONS GCode->Polygon #################################
 ###################################################################################################
@@ -723,8 +721,8 @@ class Layer():
             return [LineString(pts) for pts in parts]
         else:
             return []
-    def verifyinfillpolys(self,minDistForValidation:float=0.5)->None:
-        '''Verify a poly by measuring the distance to any overhang parameters. Valid if measuredDist<minDistForValidation'''
+    def verifyinfillpolys(self,maxDistForValidation:float=0.5)->None:
+        '''Verify a poly by measuring the distance to any overhang parameters. Valid if measuredDist<maxDistForValidation'''
         overhangs=self.getOverhangPerimeterLineStrings()
         if len(overhangs)>0:
             if self.parameters.get("PrintDebugVerification"):print(f"Layer {self.layernumber}: {len(overhangs)} Overhangs found")
@@ -745,7 +743,7 @@ class Layer():
                     if self.parameters.get("PrintDebugVerification"):print(f"Layer {self.layernumber}: Poly{idp} has to little area: {poly.area:.2f}")
                     continue
                 for ohp in overhangs:
-                    if poly.distance(ohp)<minDistForValidation:
+                    if poly.distance(ohp)<maxDistForValidation:
                         if ohp.length>self.parameters.get("MinBridgeLength"):
                             self.validpolys.append(poly)
                             self.deleteTheseInfills.append(idp)
@@ -917,12 +915,6 @@ def getStartPtOnLS(ls:LineString,kwargs:dict={},choseRandom:bool=False)->Point:
                 print("Startline Item bizzare Type of geometry:",lss.geom_type)
                 lengths.append(0)
         lsidx=np.argmax(lengths)
-        if not lsidx.is_integer():
-            try:
-                lsidx=lsidx[0]#if multiple max values: take first occurence
-            except:
-                print("Exception used for lsidx, should be int:", lsidx)
-                lsidx=0
         ls=ls.geoms[lsidx]
     if len(ls.coords)<2:
         warnings.warn("Start LineString with <2 Points invalid")
@@ -1285,4 +1277,6 @@ if __name__ == "__main__":
     skipInput = args.skip_input or platform.system() != "Windows"
 
     # Call the main function with the arguments
-    main(gCodeFileStream, path2GCode, skipInput)
+    main(gCodeFileStream, path2GCode)
+    if not skipInput:
+        input("Press enter to exit.")
