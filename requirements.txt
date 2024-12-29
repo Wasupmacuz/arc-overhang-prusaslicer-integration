@@ -1,4 +1,4 @@
-matplotlib==3.6.2
-numpy==1.23.5
-Shapely==2.0.1
-numpy-hilbert-curve==1.0.1
+matplotlib==3.8.4
+numpy==2.2.0
+numpy_hilbert_curve==1.0.1
+Shapely==2.0.6
