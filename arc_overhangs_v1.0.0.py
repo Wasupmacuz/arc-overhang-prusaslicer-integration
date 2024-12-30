@@ -57,7 +57,6 @@ from math import (
     degrees,
     radians
 )
-from numpy.lib.npyio import save
 from shapely import (
     Geometry,
     GeometryCollection,
@@ -148,7 +147,7 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         # Settings for easier debugging:
         "plotArcsEachStep": False,  # Plot arcs for every filled polygon. Use for debugging.
         "plotArcsFinal": False,  # Plot arcs for every filled polygon, when completely filled. Use for debugging.
-        "plotDetectedInfillPoly": True,  # Plot each detected overhang polygon. Use for debugging.
+        "plotDetectedInfillPoly": False,  # Plot each detected overhang polygon. Use for debugging.
         "plotDetectedSolidInfillPoly": False,  # Plot each solid infill polygon. Use for debugging.
         "plotEachHilbert": False,  # Plot each generated Hilbert curve. Use for debugging.
         "plotStart": False,  # Plot the detected geometry in the previous layer and the StartLine for Arc-Generation. Use for debugging.
@@ -197,8 +196,6 @@ def main(gCodeFileStream, path2GCode) -> None:
             layer.spotBridgeInfill()
             layer.makePolysFromBridgeInfill(extend=parameters.get("ExtendArcsIntoPerimeter", 1))
             layer.polys = layer.mergePolys()
-            plot_geometry(layer.polys)
-            plt.show()
             layer.verifyinfillpolys(prevLayer=prevLayer, maxDistForValidation=2 * parameters.get("perimeter_extrusion_width"))
 
             # ARC GENERATION
@@ -732,27 +729,27 @@ class Layer():
                     pts.append(sp)
 
             for idl, line in enumerate(lines):
-                if isTravelling:
-                    if isTravelMove(line) or not "X" in line:
-                        travelP = getPtfromCmd(line)
-                        if travelP:
-                            travelPoints.append(travelP)
-                            travelBegin = idl + start
-                    else:
-                        isTravelling = False
-                        if len(travelPoints) > 0:
-                            pts.append(travelPoints[-1])
-                            begin = travelBegin
-                            end = travelBegin + 2
-                            travelPoints = []
-                        p = getPtfromCmd(line)
-                        if p:
-                            if not pts:
-                                begin = idl + start
-                            pts.append(p)
-                            end = idl + start + 2
-                elif not isWipeMove and re.search(r"G\d", line):
-                    if splitAtTravel and isTravelMove(line):
+                if not isWipeMove and re.search(r"G\d", line):
+                    if isTravelling:
+                        if isTravelMove(line) or not "X" in line:
+                            travelP = getPtfromCmd(line)
+                            if travelP:
+                                travelPoints.append(travelP)
+                                travelBegin = idl + start
+                        else:
+                            isTravelling = False
+                            if len(travelPoints) > 0:
+                                pts.append(travelPoints[-1])
+                                begin = travelBegin
+                                end = travelBegin + 2
+                                travelPoints = []
+                            p = getPtfromCmd(line)
+                            if p:
+                                if not pts:
+                                    begin = idl + start
+                                pts.append(p)
+                                end = idl + start + 2
+                    elif splitAtTravel and isTravelMove(line):
                         if len(pts) >= 2:  # Split at travel moves if requested
                             parts.append(pts)
                             partLocations.append((begin, end))
@@ -792,11 +789,6 @@ class Layer():
             if len(pts) >= 2:  # Append the last set of points
                 parts.append(pts)
                 partLocations.append((begin, end))
-            
-            # if includeRealStartPt and idf > 0:
-            #     sp = self.getRealFeatureStartPoint(idf)  # Include the real start point if requested
-            #     if sp:
-            #         parts[0].insert(0, sp)
 
         return parts, partLocations
 
@@ -851,8 +843,6 @@ class Layer():
                 plot_geometry(infillLS, "g")  # Plot the LineString in green
                 plt.axis('square')
                 plt.show()
-        plot_geometry(self.polys)
-        plt.show()
 
     def getOverhangPerimeterLineStrings(self):
         """Extract and return overhang perimeter LineStrings from G-code features."""
@@ -1145,10 +1135,6 @@ def fill_remaining_space(last_arc: Arc, r_min: float, r_max: float, min_distance
             break  # Stop if no arcs are generated
 
         last_arc = concentric_arcs[-1]  # Update the last arc
-        plot_geometry(concentric_arcs[-1].sector, 'r')
-        plot_geometry(concentric_arcs[-1].arcline, 'b')
-        plt.axis('square')
-        plt.show()
         filled_space = unary_union((filled_space, concentric_arcs[-1].sector))  # Merge filled space with new arcs
         arcs.extend(concentric_arcs)  # Add new arcs to the list
         
@@ -1621,6 +1607,8 @@ def parse_args():
     parser.add_argument('--skip-input', action='store_true', help='Skip any user input prompts (Windows only)')
     return parser.parse_args()
 
+import cProfile
+import time
 if __name__ == "__main__":
     args = parse_args()
 
@@ -1631,6 +1619,10 @@ if __name__ == "__main__":
     skipInput = args.skip_input or platform.system() != "Windows"
 
     # Call the main function with the arguments
+    # cProfile.run('main(gCodeFileStream, path2GCode)', sort='cumtime')
+    start = time.perf_counter()
     main(gCodeFileStream, path2GCode)
+    end = time.perf_counter()
+    print(end-start)
     if not skipInput:
         input("Press enter to exit.")
