@@ -48,9 +48,7 @@ import re
 from typing import Any, List
 from math import (
     log2,
-    sqrt,
     ceil,
-    copysign,
     sin,
     cos,
     atan2,
@@ -85,7 +83,6 @@ from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 import matplotlib.pyplot as plt
 import numpy as np
-from itertools import batched
 from ast import literal_eval
 import warnings
 from random import shuffle, randint, choice
