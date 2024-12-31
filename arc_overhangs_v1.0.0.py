@@ -61,7 +61,6 @@ from shapely import (
     Geometry,
     GeometryCollection,
     LinearRing,
-    MultiPolygon,
     Point,
     Polygon,
     LineString,
@@ -101,7 +100,7 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
     # The slicer settings will be imported from GCode. However, some are Arc-specific and need to be adapted by you.
     AddManualSettingsDict: dict[str, Any] = {
         # Adapt these settings as needed for your specific geometry/printer:
-        "AllowedArcRetries": 20, # TODO: Implement a way to retry arc generation if first try fails.
+        "AllowedArcRetries": 0,  # Tries at slightly different points if arc generation fails.
         "AllowedSpaceForArcs": Polygon([[0, 0], [500, 0], [500, 500], [0, 500]]),  # Control in which areas Arcs shall be generated
         "CheckForAllowedSpace": False,  # Use the following x&y filter or not
         "ArcCenterOffset": 1 * gCodeSettingDict.get("nozzle_diameter"),  # Unit: mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.
@@ -127,11 +126,11 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "MinDistanceFromPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Control how much bumpiness you allow between arcs and perimeter. Lower will follow perimeter better, but create a lot of very small arcs. Should be more than 1 Arc width! Unit: mm
         "MinStartArcs": 2,  # How many arcs shall be generated in the first step
         "Path2Output": r"D:/Downloads/output_v1.gcode",  # Leave empty to overwrite the file or write to a new file. Full path required.
-        "RMax": 110,  # The max radius of the arcs.
+        "RMax": 30,  # The max radius of the arcs.
         "ReplaceInternalBridging": True, # If true, will replace bridging that goes over external perimeters but does not have overhang perimeters nearby.
         "SafetyBreak_MaxArcNumber": 2000,  # Max Number of Arc Start Points. Prevents While loop from running forever.
         "TimeLapseEveryNArcs": 0,  # Deactivate with 0, inserts M240 after N ArcLines, 5 is a good value to start.
-        "UseLeastAmountOfCenterPoints": True,  # Always generates arcs until rMax is reached, divide the arcs into pieces if needed. Reduces the amount of center points.
+        "UseLeastAmountOfCenterPoints": False,  # Always generates arcs until rMax is reached, divide the arcs into pieces if needed. Reduces the amount of center points.
         "WarnBelowThisFillingPercentage": 90,  # Fill the overhang at least XX%, else don't replace overhang. Easier detection of errors in small/delicate areas. Unit: Percent
 
         # Special cooling to prevent warping:
@@ -285,10 +284,10 @@ def main(gCodeFileStream, path2GCode) -> None:
                     if remain2FillPercent > 100 - parameters.get("WarnBelowThisFillingPercentage"):
                         # layer.failedArcGenPolys.append(poly) # Bugged percentage detection, not reliable TODO
                         warnings.warn(f"layer {idl}: The Overhang Area is only {100 - remain2FillPercent:.0f}% filled with Arcs. Please try again with adapted Parameters: set 'ExtendIntoPerimeter' higher to enlarge small areas. Lower the MaxDistanceFromPerimeter to follow the curvature more precise. Set 'ArcCenterOffset' to 0 to reach delicate areas.")
-                        plot_geometry(poly)
-                        plot_geometry(finalFilledSpace, color='b', kwargs={"filled"})
-                        plt.axis('square')
-                        plt.show()
+                        # plot_geometry(poly)
+                        # plot_geometry(finalFilledSpace, color='b', kwargs={"filled"})
+                        # plt.axis('square')
+                        # plt.show()
 
                     # Generate G-code for arc and insert at the beginning of the layer
                     eSteps = calcESteps(parameters)
@@ -1096,14 +1095,20 @@ class Arc():
         """Generate a concentric arc by intersecting a circle with the remaining space."""
         self.circle = create_circle(startpt, self.r, self.pointsPerMillimeter)
         self.arcline = intersection(self.circle, remainingSpace)  # Intersect the circle with the remaining space
+        if isinstance(self.arcline, MultiLineString):
+            self.arcline = linemerge(self.arcline)
 
-        sector_coords = []
-        for geom in self.arcline.geoms if isinstance(self.arcline, MultiLineString) else [self.arcline]:
-            if geom.is_empty:
-                continue
-            coords = list(geom.coords).extend([self.center.coords, geom.coords[0]])
-            sector_coords.append(coords)
-        self.sector = MultiPolygon(sector_coords)
+        # sector_coords = []
+        # for geom in self.arcline.geoms if isinstance(self.arcline, MultiLineString) else [self.arcline]:
+        #     if geom.is_empty:
+        #         continue
+        #     coords = list(geom.coords)
+        #     coords.append(self.center.coords[0])
+        #     sector_coords.append(coords)
+        # sectorPolys = []
+        # for sector in sector_coords:
+        #     sectorPolys = Polygon(sector)
+        # self.sector = GeometryCollection(sectorPolys)
 
         return self.arcline  # Return the resulting arc
 
@@ -1119,26 +1124,32 @@ class BridgeInfill():
 def fill_remaining_space(last_arc: Arc, r_min: float, r_max: float, min_distance_from_perimeter: float, filled_space: Polygon, poly: Polygon, parameters: dict):
     """Fill the remaining space with concentric arcs until the minimum distance is reached."""
     arcs = []
+    allowedRetries = parameters.get("AllowedArcRetries")
+    failureCount = 0
 
     text = "Recursion not needed to fill space."
     for id in range(parameters.get("SafetyBreak_MaxArcNumber")):
         remaining_space = difference(poly, buffer(filled_space, parameters.get("ArcWidth") / 2))  # Calculate remaining space
-        farthest_point, longest_distance = get_farthest_point(filled_space.boundary, poly)  # Find the farthest point
+        farthest_points, longest_distances = get_farthest_points(filled_space.boundary, poly, allowedRetries + 1)  # Find the farthest point
 
-        if not farthest_point or longest_distance < min_distance_from_perimeter:
+        if farthest_points.size == 0 or longest_distances[failureCount] < min_distance_from_perimeter:
             break  # Stop if no valid point or distance is too small
 
-        start_pt = move_toward_point(farthest_point, last_arc.center, parameters.get("ArcCenterOffset", 2))  # Adjust start point
+        start_pt = move_toward_point(farthest_points[failureCount], last_arc.center, parameters.get("ArcCenterOffset", 2))  # Adjust start point
         concentric_arcs = generateMultipleConcentricArcs(start_pt, r_min, r_max, poly.boundary, remaining_space, parameters)  # Generate arcs
 
         if len(concentric_arcs) == 0:
-            break  # Stop if no arcs are generated
-
+            failureCount += 1
+            if failureCount >= allowedRetries:
+                break  # Stop if no arcs are generated
+            continue
+        
+        failureCount = 0
         last_arc = concentric_arcs[-1]  # Update the last arc
-        filled_space = unary_union((filled_space, concentric_arcs[-1].sector))  # Merge filled space with new arcs
+        filled_space = intersection(poly, unary_union((filled_space, Polygon(last_arc.circle))))  # Merge filled space with new arcs
         arcs.extend(concentric_arcs)  # Add new arcs to the list
         
-        text = f"Filling remaining space. Iterations: {id}. Arcs this iteration: {len(concentric_arcs)}"
+        text = f"Filling remaining space. Iterations: {id}. Arcs this iteration: {len(concentric_arcs)}."
         print(text, end='\r', flush=True)
 
         if parameters.get("plotArcsEachStep"):
@@ -1217,7 +1228,7 @@ def create_circle(center: Point, radius: float, points_per_mm: float) -> LinearR
     n = ceil(2 * pi * radius * points_per_mm)  # Calculate the number of points based on resolution
     theta = np.linspace(0, 2 * pi - 2 * pi / n, n)  # Generate evenly spaced angles
     points = np.column_stack((radius * np.sin(theta) + x, radius * np.cos(theta) + y))  # Compute circle points
-    return LinearRing(points)  # Return the circular polygon as a LinearRing
+    return LinearRing(points)  # Return the circle as a LinearRing
 
 def create_circle_between_angles(center:Point, radius:float, startAngle:float, endAngle:float, points_per_mm: float, clockwise: bool = False)->List[float]:
     x, y = center.x, center.y
@@ -1228,7 +1239,7 @@ def create_circle_between_angles(center:Point, radius:float, startAngle:float, e
     points = np.column_stack((radius * np.sin(theta) + x, radius * np.cos(theta) + y))  # Compute circle points
     return LineString(points)
 
-def get_farthest_point(from_geom: Geometry, to_poly: Polygon) -> tuple:
+def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points: int = 1) -> tuple:
     """
     Find the point on a given geometry that is farthest away from the boundary of a polygon.
     
@@ -1250,8 +1261,6 @@ def get_farthest_point(from_geom: Geometry, to_poly: Polygon) -> tuple:
         return None, None  # Return None if the input geometry is empty
     
     prepare(to_poly.boundary)  # Prepare the polygon boundary for faster distance calculations
-    
-    longest_distance = -1  # Initialize the longest distance
 
     try:
         coords = points(from_geom.coords)  # Extract points from the geometry's coordinates
@@ -1264,11 +1273,19 @@ def get_farthest_point(from_geom: Geometry, to_poly: Polygon) -> tuple:
             coords = points(coords)
 
     distances = distance(to_poly.boundary, coords)  # Calculate distances from each point to the polygon's boundary
-    index_max = np.argmax(distances)  # Find the index of the maximum distance
-    longest_distance = distances[index_max]  # Retrieve the longest distance
-    farthest_point = coords[index_max]  # Retrieve the farthest point
+    farthest_points = []
+    longest_distances = []
+    # Get indices sorted by descending distances
+    sorted_indices = np.argsort(distances)[::-1]
+
+    # Select top 'number_of_points' indices
+    top_indices = sorted_indices[:number_of_points]
+
+    # Retrieve the longest distances and farthest points
+    longest_distances = distances[top_indices]
+    farthest_points = coords[top_indices]
     
-    return farthest_point, longest_distance
+    return farthest_points, longest_distances
 
 def move_toward_point(start_point: Point, target_point: Point, distance: float, angle_correction: float = 0.0) -> Point:
     """Move a point by a set distance toward another point and adjust the angle direction"""
@@ -1330,9 +1347,11 @@ def generateMultipleConcentricArcs(startpt: Point, rMin: float, rMax: float, bas
     for r in r_values:
         arcObj = Arc(startpt, r, kwargs=kwargs)  # Create an Arc object
         arc = arcObj.generateConcentricArc(startpt, remainingSpace)  # Generate the concentric arc
-        if arc.is_empty or (intersects(basePoly, arc) and not kwargs.get("UseLeastAmountOfCenterPoints", False)):
+        if arc.is_empty:
             break  # Stop if the arc lies completely outside the polygon or it intersects the boundary and the least amount of center points is not used
         arcs.append(arcObj)  # Add the arc to the list
+        if intersects(basePoly, arc) and not kwargs.get("UseLeastAmountOfCenterPoints", False):
+            break
 
     return arcs
 
@@ -1373,7 +1392,7 @@ def plot_geometry(geometry, color='black', linewidth=1, **kwargs):
         # Plot a single point
         x, y = geometry.x, geometry.y
         plt.scatter(x, y, color=color, linewidth=linewidth)
-    elif geometry.geom_type == 'LineString':
+    elif geometry.geom_type == 'LineString' or geometry.geom_type == "LinearRing":
         # Plot a line string
         x, y = geometry.xy
         plt.plot(x, y, color=color, linewidth=linewidth)
@@ -1607,8 +1626,6 @@ def parse_args():
     parser.add_argument('--skip-input', action='store_true', help='Skip any user input prompts (Windows only)')
     return parser.parse_args()
 
-import cProfile
-import time
 if __name__ == "__main__":
     args = parse_args()
 
@@ -1619,10 +1636,6 @@ if __name__ == "__main__":
     skipInput = args.skip_input or platform.system() != "Windows"
 
     # Call the main function with the arguments
-    # cProfile.run('main(gCodeFileStream, path2GCode)', sort='cumtime')
-    start = time.perf_counter()
     main(gCodeFileStream, path2GCode)
-    end = time.perf_counter()
-    print(end-start)
     if not skipInput:
         input("Press enter to exit.")
