@@ -9,21 +9,25 @@ HOW TO USE:
     Option A: Open your system console and type `python` followed by the path to this script and the path of the Gcode file.
               This will overwrite the file unless "Path2Output" is specified.
 
-    Option B: Open PrusaSlicer, go to the Print Settings tab -> Output Options. Locate the window for the post-processing script.
-              In that window, enter: the full path to your Python executable, followed by a space, and the full path to this script.
-              If either path contains spaces, mask them as described here: https://manual.slic3r.org/advanced/post-processing
+    Option B: Open your slicer software (e.g., PrusaSlicer, or OrcaSlicer) and locate the post-processing script option.
+              For example:
+                - In PrusaSlicer: Go to the "Print Settings" tab -> "Output Options" section. 
+                - In OrcaSlicer: Go to the "Process" menu -> enable the "Advanced" options toggle -> "Others".
+              In the Post-processing Scripts window, enter:
+                  the full path to your Python executable, followed by a space, and the full path to this script.
+              If either path contains spaces, enclose the path in quotation marks. Refer to your slicer's documentation for details on handling paths:
+                  - https://manual.slic3r.org/advanced/post-processing
 
-    Note: PrusaSlicer will execute the script after exporting the Gcode. Therefore, the view in the window won't change.
+    Note: Your slicer will execute the script after exporting the Gcode. Therefore, the view in the window won't change.
           Open the finished Gcode file to see the results.
 
-To change generation settings, scroll to the 'Parameter' section in the script. Parameters from PrusaSlicer will be extracted
+To change generation settings, scroll to the 'Parameter' section in the script. Parameters from your slicer will be extracted
 automatically from the Gcode.
 
 REQUIREMENTS:
     - Python 3.10+
     - Libraries: shapely 2.0.6+, numpy 2.2.0+, numpy-hilbert-curve 1.0.1, matplotlib 3.8.4(for debugging)
-    - Slicing in PrusaSlicer is mandatory.
-    - Tested with PrusaSlicer 2.5, 2.8, 2.9 and Python 3.10, 3.12. Other versions might require adjustments to keywords.
+    - Tested with PrusaSlicer 2.5, 2.8, 2.9; OrcaSlicer 2.2.0; and Python 3.10, 3.12. Other versions might require adjustments to keywords.
 
 NOTES:
     - This code is somewhat messy. Normally, it would be split into multiple files, but that would compromise ease of use.
@@ -94,6 +98,74 @@ max=max
 min=min
 len=len
 
+slicer: str = None
+# Map from this slicer's settings to PrusaSlicer. If you add a new slicer, please submit a pull request!
+slicer_settings_map = {
+    'PrusaSlicer': {
+        "avoid_crossing_perimeters": "avoid_crossing_perimeters",
+        "bridge_speed": "bridge_speed",
+        'bridge_fan_speed': 'bridge_fan_speed',
+        "external_perimeters_first": "external_perimeters_first",
+        'extrusion_width': 'extrusion_width',
+        "filament_diameter": "filament_diameter",
+        "infill_extrusion_width": "infill_extrusion_width",
+        "infill_first": "infill_first",
+        "layer_height": "layer_height",
+        'nozzle_diameter': 'nozzle_diameter',
+        'overhangs': 'overhangs',
+        'perimeter_extrusion_width': 'perimeter_extrusion_width',
+        "retract_length": "retract_length",
+        'retract_speed': 'retract_speed',
+        "solid_infill_extrusion_width": "solid_infill_extrusion_width",
+        'travel_speed': 'travel_speed',
+        'use_relative_e_distances': 'use_relative_e_distances',
+    },
+    'OrcaSlicer': {
+        "reduce_crossing_wall": "avoid_crossing_perimeters",
+        "bridge_speed": "bridge_speed",
+        'overhang_fan_speed': 'bridge_fan_speed',
+        #"wall_sequence": "external_perimeters_first", SETTING HANDLED DIFFERENTLY, STORE AS DEFAULT NAME:
+        "wall_sequence": "wall_sequence",
+        'line_width': 'extrusion_width',
+        "filament_diameter": "filament_diameter",
+        "sparse_infill_line_width": "infill_extrusion_width",
+        "is_infill_first": "infill_first",
+        "layer_height": "layer_height",
+        'nozzle_diameter': 'nozzle_diameter',
+        'detect_overhang_wall': 'overhangs',
+        'inner_wall_line_width': 'perimeter_extrusion_width',
+        "retraction_length": "retract_length",
+        'retraction_speed': 'retract_speed',
+        "internal_solid_infill_line_width": "solid_infill_extrusion_width",
+        'travel_speed': 'travel_speed',
+        'use_relative_e_distances': 'use_relative_e_distances',
+    },
+    # Add mappings for other slicers
+}
+
+def getSlicerSpecificName(name: str):
+    if slicer == "PrusaSlicer":  # No need to map in this case, but the mapping is left to help contributors translate their own slicer.
+        return name
+    equivalent_names = {
+        "PrusaSlicer": {
+            ";TYPE:Bridge infill": ";TYPE:Bridge infill",
+            ";TYPE:External perimeter": ";TYPE:External perimeter",
+            ";TYPE:Overhang perimeter": ";TYPE:Overhang perimeter",
+            ";TYPE:Solid infill": ";TYPE:Solid infill",
+        },
+        "OrcaSlicer": {
+            ";TYPE:Bridge infill": ";TYPE:Bridge",
+            ";TYPE:External perimeter": ";TYPE:Outer wall",
+            ";TYPE:Overhang perimeter": ";TYPE:Overhang wall",
+            ";TYPE:Solid infill": ";TYPE:Internal solid infill"
+        },
+        # Add mappings for other slicers
+    }
+    names = equivalent_names.get(slicer)
+    if names and name in names:
+        return names.get(name)
+    return name
+
 ########## Parameters  - adjust values here as needed ##########
 def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
     """Merge two dictionaries and set some keys/values explicitly."""
@@ -103,7 +175,7 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "AllowedArcRetries": 0,  # Tries at slightly different points if arc generation fails.
         "AllowedSpaceForArcs": Polygon([[0, 0], [500, 0], [500, 500], [0, 500]]),  # Control in which areas Arcs shall be generated
         "CheckForAllowedSpace": False,  # Use the following x&y filter or not
-        "ArcCenterOffset": 1 * gCodeSettingDict.get("nozzle_diameter"),  # Unit: mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.
+        "ArcCenterOffset": 1.5 * gCodeSettingDict.get("nozzle_diameter"),  # Unit: mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.
         "ArcExtrusionMultiplier": 1.35, # Multiplies how much filament will be extruded while printing arcs.
         "ArcFanSpeed": 255,  # Cooling to full blast = 255
         "ArcMinPrintSpeed": 0.5 * 60,  # Unit: mm/min
@@ -165,7 +237,7 @@ def main(gCodeFileStream, path2GCode) -> None:
     parameters = makeFullSettingDict(gCodeSettingDict=gCodeSettingDict)
     
     if not checkforNecesarrySettings(gCodeSettingDict=gCodeSettingDict):
-        warnings.warn(message="Incompatible PrusaSlicer-Settings used!")
+        warnings.warn(message=f"Incompatible {slicer}-Settings used!")
         input("Can not run script, gcode unmodified. Press enter to close.")
         raise ValueError("Incompatible Settings used!")
     
@@ -331,9 +403,9 @@ def main(gCodeFileStream, path2GCode) -> None:
                 messedWithSpeed = False
                 messedWithFan = False
                 if gcodeWasModified:
-                    layer.prepareDeletion(featurename="Bridge", polys=layer.validpolys)
+                    layer.prepareDeletion(featurename=getSlicerSpecificName(";TYPE:Bridge infill"), polys=layer.validpolys)
                     if len(layer.oldpolys) > 0 and parameters.get("doSpecialCooling"):
-                        layer.prepareDeletion(featurename=":Solid", polys=layer.oldpolys)
+                        layer.prepareDeletion(featurename=getSlicerSpecificName(";TYPE:Solid infill"), polys=layer.oldpolys)
                 # print("FEATURES:", [(f[0], f[2]) for f in layer.features])
                 injectionStart = None
                 print("modifying GCode")
@@ -350,29 +422,29 @@ def main(gCodeFileStream, path2GCode) -> None:
                             isInjected = True
                             # Travel to restored pre-injected tool position
                             for id in reversed(range(injectionStart)):
-                                if "G1 X" in layer.lines[id]:
+                                if "G1 X" in layer.lines[id]:  # TODO: should find changes to Z instead of ignoring them
                                     modifiedlayer.lines.append(retractGCode(retract=True, kwargs=parameters))  # Retract
-                                    modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters))  # Travel
+                                    modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters, ignoreZ=True))  # Travel
                                     modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters))  # Extrude
                                     break
                     if layer.oldpolys and parameters.get("doSpecialCooling"):
-                        if ";TYPE:Solid" in line and not hilbertIsInjected:  # Startpoint of solid infill: print all hilberts from here.
+                        if getSlicerSpecificName(";TYPE:Solid infill") in line and not hilbertIsInjected:  # Startpoint of solid infill: print all hilberts from here.
                             hilbertIsInjected = True
                             injectionStart = idline
-                            modifiedlayer.lines.append(";TYPE:Solid infill\n")
+                            modifiedlayer.lines.append(getSlicerSpecificName(";TYPE:Solid infill") + "\n")
                             modifiedlayer.lines.append(f"M106 S{parameters.get('aboveArcsFanSpeed')}\n")
                             hilbertGCode = hilbert2GCode(allhilbertpts, parameters, layer.height)
                             modifiedlayer.lines.extend(hilbertGCode)
                             # Add restored pre-injected tool position
                             for id in reversed(range(injectionStart)):
-                                if "G1 X" in layer.lines[id]:
+                                if "G1 X" in layer.lines[id]:  # TODO: should find changes to Z instead of ignoring them
                                     modifiedlayer.lines.append(retractGCode(retract=True, kwargs=parameters))  # Retract
-                                    modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters))  # Travel
+                                    modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters, ignoreZ=True))  # Travel
                                     modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters))  # Extrude
                                     break
                     if "G1 F" in line.split(";", 1)[0]:  # Special block-speed-command
                         curPrintSpeed = line
-                    if layer.exportThisLine(idline):
+                    if layer.exportThisLine(idline - 1):  # Subtract 1 because there's a disconnect between line IDs here and line IDs when calculating which lines to delete. Should fix TODO
                         if layer.isClose2Bridging(line, parameters.get("CoolingSettingDetectionDistance")):
                             if not messedWithFan:
                                 modifiedlayer.lines.append(f"M106 S{parameters.get('aboveArcsFanSpeed')}\n")
@@ -539,7 +611,7 @@ class Layer():
         self.solidPolys=[]
         self.dontPerformPerimeterCheck=kwargs.get('notPerformPerimeterCheck',False)
         self.deleteTheseInfills=[]
-        self.deletelines=[]
+        self.deletelines=set()
         self.associatedIDs=[]
         self.sinfills=[]
         self.parameters=kwargs
@@ -614,7 +686,7 @@ class Layer():
             ftype = fe[0]
             lines = fe[1]
 
-            if "External" in ftype or ("Overhang" in ftype and extPerimeterIsStarted) or ("Overhang" in ftype and self.dontPerformPerimeterCheck):
+            if getSlicerSpecificName(";TYPE:External perimeter") in ftype or (getSlicerSpecificName(";TYPE:Overhang perimeter") in ftype and extPerimeterIsStarted) or (getSlicerSpecificName(";TYPE:Overhang perimeter") in ftype and self.dontPerformPerimeterCheck):
                 # Start collecting lines for external perimeter or overhang perimeter
                 if not extPerimeterIsStarted:
                     linesWithStart = []
@@ -627,7 +699,7 @@ class Layer():
                     extPerimeterIsStarted = True
                 linesWithStart = linesWithStart + lines  # Append current feature lines
             
-            if extPerimeterIsStarted and (idf == len(self.features) - 1 or not ("External" in ftype or "Overhang" in ftype)):
+            if extPerimeterIsStarted and (idf == len(self.features) - 1 or not (getSlicerSpecificName(";TYPE:External perimeter") in ftype or getSlicerSpecificName(";TYPE:Overhang perimeter") in ftype)):
                 # Finish the polygon if end of feature list or different feature
                 poly = makePolygonFromGCode(linesWithStart)  # Create polygon from collected lines
                 if poly:
@@ -711,7 +783,7 @@ class Layer():
             ftype = fe[0]
             lines = fe[1]
             start = fe[2]
-            begin = -1
+            begin = 0
             travelBegin = -1
             end = -1
             pts = []
@@ -793,7 +865,7 @@ class Layer():
 
     def spotSolidInfill(self) -> None:
         """Identify and store solid infill features from G-code."""
-        for part, location in zip(*self.spotFeaturePoints("Solid infill", splitAtTravel=True, includeRealStartPt=True)):
+        for part, location in zip(*self.spotFeaturePoints(getSlicerSpecificName(";TYPE:Solid infill"), splitAtTravel=True, includeRealStartPt=True)):
             if self.verifySolidInfillPts(part):  # Verify the infill points
                 self.sinfills.append(LineString(part))  # Create and store LineString objects
             else:
@@ -814,8 +886,8 @@ class Layer():
 
     def verifySolidInfillPts(self, infillpts: list) -> bool:
         """Verify solid infill points by checking if any are within the desired polygon locations."""
-        possible_polys = self.indexedOldPolys.query(infillpts, predicate="within").T.tolist()  # Find polygons containing points
-        for pair in possible_polys:
+        possible_pairs = self.indexedOldPolys.query(infillpts, predicate="within").T.tolist()  # Find pairs of points and polygons that may intersect
+        for pair in possible_pairs:
             p = infillpts[pair[0]]  # Get the point
             poly = self.indexedOldPolys.geometries.take(pair[1])  # Get the corresponding polygon
             if contains_xy(poly, p.x, p.y):
@@ -824,7 +896,7 @@ class Layer():
 
     def spotBridgeInfill(self) -> None:
         """Identify and store bridge infill features from G-code."""
-        parts = self.spotFeaturePoints("Bridge infill", splitAtTravel=True, includeRealStartPt=True)[0]  # Find bridge infill points
+        parts = self.spotFeaturePoints(getSlicerSpecificName(";TYPE:Bridge infill"), splitAtTravel=True, includeRealStartPt=True)[0]  # Find bridge infill points
         for infillpts in parts:
             self.binfills.append(BridgeInfill(infillpts))  # Create and store BridgeInfill objects
 
@@ -845,7 +917,7 @@ class Layer():
 
     def getOverhangPerimeterLineStrings(self):
         """Extract and return overhang perimeter LineStrings from G-code features."""
-        parts = self.spotFeaturePoints("Overhang perimeter", includeRealStartPt=True)[0]  # Find overhang perimeter points
+        parts = self.spotFeaturePoints(getSlicerSpecificName(";TYPE:Overhang perimeter"), includeRealStartPt=True)[0]  # Find overhang perimeter points
         if parts:
             return [LineString(pts) for pts in parts]  # Convert points to LineStrings
         else:
@@ -903,7 +975,7 @@ class Layer():
                 if self.parameters.get("PrintDebugVerification"):
                     print(f"Layer {self.layernumber}: Poly{idp} is not close enough to overhang perimeters")
 
-    def prepareDeletion(self, featurename: str = "Bridge", polys: list = None) -> None:
+    def prepareDeletion(self, featurename: str = getSlicerSpecificName(";TYPE:Bridge infill"), polys: list = None) -> None:
         """Prepare deletion ranges for G-code lines based on feature and polygon overlaps."""
         if not polys:
             polys = self.validpolys  # Use default polygons if none provided
@@ -949,7 +1021,7 @@ class Layer():
                     end = len(self.lines)  # Set end to the end of the G-code lines
                 
                 # Create a set of all line numbers between start and end (inclusive)
-                finalDeletionLines = set(range(start, end + 1))  
+                finalDeletionLines = set(range(start, end))  
 
                 if self.failedSolidInfillLocations:  # If there are solid infill locations we want to preserve
                     remainingGroups = []  # List to store groups to keep
@@ -962,16 +1034,14 @@ class Layer():
                     
                     self.failedSolidInfillLocations = remainingGroups  # Update the failedSolidInfillLocations with remaining groups
 
-                            
-                self.deletelines.append(finalDeletionLines)  # Add the deletion set
+                self.deletelines.update(finalDeletionLines)  # Add the deletion set
 
     def exportThisLine(self, linenumber: int) -> bool:
         """Determine if a G-code line should be exported based on deletion ranges."""
         export = True
         if len(self.deletelines) > 0:
-            for deleteSet in self.deletelines:
-                if linenumber in deleteSet:  # Check if line is in the set of lines we want deleted
-                    export = False
+            if linenumber in self.deletelines:  # Check if line is in the set of lines we want deleted
+                export = False
         return export
 
     def createHilbertCurveInPoly(self, poly: Polygon):
@@ -1437,33 +1507,37 @@ def getArcBoundaries(concentricArcs: list) -> list:
     return boundaries
 
 def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> dict:
-    """Extract PrusaSlicer settings from G-code lines into a dictionary."""
+    """Extract slicer settings from G-code lines into a dictionary."""
     gCodeSettingDict = fallbackValuesDict  # Start with fallback values
     isSetting = False
+    global slicer
 
     for line in gcodeLines:
         if "; prusaslicer_config = begin" in line:
+            slicer = "PrusaSlicer"
             isSetting = True  # Start reading settings
             continue
+        elif "; CONFIG_BLOCK_START" in line:
+            slicer = "OrcaSlicer"
+            isSetting = True  # Start reading settings
+            continue
+        #elif... Add detections for other slicers
         if isSetting:
-            setting = line.strip(";").strip("\n").split("= ", 1)
-            if len(setting) == 2:
-                try:
-                    # Automatically convert value to int, float, etc.
-                    gCodeSettingDict[setting[0].strip(" ")] = literal_eval(node_or_string=setting[1])
-                except:
-                    # Leave complex settings as strings
-                    gCodeSettingDict[setting[0].strip(" ")] = setting[1]
-            elif len(setting) > 2:
-                # Handle settings not in key/value format
-                gCodeSettingDict[setting[0].strip(" ")] = setting[1:]
-                warnings.warn(message=f"PrusaSlicer Setting {setting[0]} not in the expected key/value format, but added into the settings-dictionary")
-            else:
-                print("Could not read setting from PrusaSlicer:", setting)
-
-    # Handle percentage-based perimeter extrusion width (credit: 5axes via GitHub)
-    if "%" in str(gCodeSettingDict.get("perimeter_extrusion_width")):
-        gCodeSettingDict["perimeter_extrusion_width"] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%")) / 100)
+            line = line.strip(';').strip()
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                internal_key = slicer_settings_map.get(slicer).get(key)
+                if internal_key:
+                    try:
+                        gCodeSettingDict[internal_key] = literal_eval(value)
+                    except:
+                        gCodeSettingDict[internal_key] = value
+    
+    if slicer is None:
+        warnings.warn("No slicer detected. Please make sure your slicer can be detected by the script.")
+        sys.exit(0)
 
     isWarned = False
     for key, val in gCodeSettingDict.items():
@@ -1477,27 +1551,31 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
                     warnings.warn(message=f"{key} was specified as tuple/list, this is normal for using multiple extruders. For all list values First values will be used. If unhappy: Add manual fallback value by searching for ADD FALLBACK in the code. And add 'Fallback_<key>:<yourValue>' into the dictionary.")
                     isWarned = True
 
+    # Handle percentage-based perimeter extrusion width (credit: 5axes via GitHub)
+    if "%" in str(gCodeSettingDict.get("perimeter_extrusion_width")):
+        gCodeSettingDict["perimeter_extrusion_width"] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%")) / 100)
+
     return gCodeSettingDict
 
 def checkforNecesarrySettings(gCodeSettingDict: dict) -> bool:
-    """Check if necessary PrusaSlicer settings are enabled for the script to work."""
+    """Check if necessary slicer settings are enabled for the script to work."""
     if not gCodeSettingDict.get("use_relative_e_distances"):
-        warnings.warn("Script only works with relative e-distances enabled in PrusaSlicer. Change accordingly.")
+        warnings.warn(f"Script only works with relative e-distances enabled in {slicer}. Change accordingly.")
         return False
     if gCodeSettingDict.get("extrusion_width") < 0.001 or gCodeSettingDict.get("perimeter_extrusion_width") < 0.001 or gCodeSettingDict.get("solid_infill_extrusion_width") < 0.001:
-        warnings.warn("Script only works with extrusion_width and perimeter_extrusion_width and solid_infill_extrusion_width > 0. Change in PrusaSlicer accordingly.")
+        warnings.warn(f"Script only works with {getSlicerSpecificName("extrusion_width")}, {getSlicerSpecificName("perimeter_extrusion_width")}, and {getSlicerSpecificName("solid_infill_extrusion_width")} > 0. Change in {slicer} accordingly.")
         return False
     if not gCodeSettingDict.get("overhangs"):
-        warnings.warn("Overhang detection disabled in PrusaSlicer. Activate in PrusaSlicer for script success!")
+        warnings.warn(f"Overhang detection disabled in {slicer}. Activate for script success!")
         return False
     if gCodeSettingDict.get("bridge_speed") > 5:
-        warnings.warn(f"Your Bridging Speed is set to {gCodeSettingDict.get('bridge_speed'):.0f} mm/s in PrusaSlicer. This can cause problems with warping. <=5mm/s is recommended.")
+        warnings.warn(f"Your Bridging Speed is set to {gCodeSettingDict.get('bridge_speed'):.0f} mm/s in {slicer}. This can cause problems with warping. <=5mm/s is recommended.")
     if gCodeSettingDict.get("infill_first"):
-        warnings.warn("Infill set in PrusaSlicer to be printed before perimeter. This can cause problems with the script.")
-    if gCodeSettingDict.get("external_perimeters_first"):
-        warnings.warn("PrusaSlicer-Setting: External perimeter is printed before inner perimeters. Change for better overhang performance.")
+        warnings.warn(f"Infill set in {slicer} to be printed before perimeter. This can cause problems with the script.")
+    if gCodeSettingDict.get("external_perimeters_first") or gCodeSettingDict.get("wall_sequence") == "outer wall/inner wall":
+        warnings.warn(f"{slicer}-Setting: External perimeter is printed before inner perimeters. Change for better overhang performance.")
     if not gCodeSettingDict.get("avoid_crossing_perimeters"):
-        warnings.warn("PrusaSlicer-Setting: Travel Moves may cross the outline and therefore cause artifacts in arc generation.")
+        warnings.warn(f"{slicer}-Setting: Travel Moves may cross the outline and therefore cause artifacts in arc generation.")
     return True
 
 def calcESteps(settingsdict: dict, layerheight: float = None) -> float:
@@ -1599,10 +1677,14 @@ def hilbert2GCode(allhilbertpts: list, parameters: dict, layerheight: float):
     hilbertGCode.append(retractGCode(True, parameters))
     return hilbertGCode
 
-def line2TravelMove(line: str, parameters: dict) -> str:
+def line2TravelMove(line: str, parameters: dict, ignoreZ: bool = False) -> str:
     """Convert a G-code line to a travel move by modifying extrusion and feed rate."""
     if "E0 " in line or "E0\n" in line:
         return line  # This is already a travel move
+    
+    if ignoreZ:
+        regex = r" Z\d*\.?\d*" # Regex to match any change to Z (e.g., Z.24, Z5, Z2.12) https://regex101.com/.
+        line = re.sub(regex, "", line)
 
     travelstr = f"F{parameters.get('travel_speed') * 60}"  # Create travel feed rate string
 
@@ -1621,7 +1703,7 @@ warnings.showwarning = _warning
 ################################# MAIN EXECUTION #################################
 ##################################################################################
 def parse_args():
-    parser = argparse.ArgumentParser(description="Process overhangs within PrusaSlicer G-code files into circular arcs.")
+    parser = argparse.ArgumentParser(description="Process overhangs within G-code files into circular arcs.")
     parser.add_argument('path', type=str, help='Path to the G-code file')
     parser.add_argument('--skip-input', action='store_true', help='Skip any user input prompts (Windows only)')
     return parser.parse_args()
