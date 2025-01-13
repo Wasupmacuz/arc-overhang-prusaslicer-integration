@@ -197,7 +197,7 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "MinBridgeLength": 0,  # Minimum bridge length to generate arcs. Unit: mm
         "MinDistanceFromPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Control how much bumpiness you allow between arcs and perimeter. Lower will follow perimeter better, but create a lot of very small arcs. Should be more than 1 Arc width! Unit: mm
         "MinStartArcs": 2,  # How many arcs shall be generated in the first step
-        "Path2Output": r"D:/Downloads/output_v1.gcode",  # Leave empty to overwrite the file or write to a new file. Full path required.
+        "Path2Output": r"",  # Leave empty to overwrite the file or write to a new file. Full path required.
         "RMax": 30,  # The max radius of the arcs.
         "ReplaceInternalBridging": True, # If true, will replace bridging that goes over external perimeters but does not have overhang perimeters nearby.
         "SafetyBreak_MaxArcNumber": 2000,  # Max Number of Arc Start Points. Prevents While loop from running forever.
