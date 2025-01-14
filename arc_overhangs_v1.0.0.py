@@ -344,8 +344,8 @@ def main(gCodeFileStream, path2GCode) -> None:
                     remainingArcs, finalFilledSpace = fill_remaining_space(concentricArcs[-1], rMin, rMax, MinDistanceFromPerimeter, filledSpace, poly, parameters)
                     arcBoundaries.extend(getArcBoundaries(remainingArcs))
                     if parameters.get("plotArcsFinal"):
-                        plt.title(f"Total No Arcs: {len(arcs)}")
-                        plot_geometry([arc.arcline for arc in arcs], changecolor=True)
+                        plt.title(f"Total No Arcs: {len(arcBoundaries)}")
+                        plot_geometry([arc for arc in arcBoundaries], changecolor=True)
                         plot_geometry(poly, 'r')
                         plt.axis('square')
                         plt.show()
@@ -875,7 +875,7 @@ class Layer():
     def makePolysFromSolidInfill(self, extend: float = 1) -> None:
         """Create polygons from solid infill LineStrings by buffering them."""
         for sInfill in self.sinfills:
-            infillPoly = buffer(sInfill, extend + 1e-2)  # Buffer the LineString to create a polygon
+            infillPoly = buffer(sInfill, extend + 5e-2)  # Buffer the LineString to create a polygon
             self.solidPolys.append(infillPoly)  # Add the polygon to the list
 
             if self.parameters.get("plotDetectedSolidInfillPoly"):
@@ -905,7 +905,7 @@ class Layer():
         for bInfill in self.binfills:
             infillPts = bInfill.pts  # Get infill points
             infillLS = LineString(infillPts)  # Create LineString from points
-            infillPoly = buffer(infillLS, extend + 1e-2)  # Buffer the LineString to create a polygon
+            infillPoly = buffer(infillLS, extend + 5e-2)  # Buffer the LineString to create a polygon
             self.polys.append(infillPoly)  # Add the polygon to the list
             self.associatedIDs.append(bInfill.id)  # Store the associated ID
 
