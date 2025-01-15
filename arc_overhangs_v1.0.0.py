@@ -355,7 +355,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                     remain2FillPercent = (1 - finalFilledSpace.area / poly.area) * 100
                     if remain2FillPercent > 100 - parameters.get("WarnBelowThisFillingPercentage"):
                         # layer.failedArcGenPolys.append(poly) # Bugged percentage detection, not reliable TODO
-                        warnings.warn(f"layer {idl}: The Overhang Area is only {100 - remain2FillPercent:.0f}% filled with Arcs. Please try again with adapted Parameters: set 'ExtendIntoPerimeter' higher to enlarge small areas. Lower the MaxDistanceFromPerimeter to follow the curvature more precise. Set 'ArcCenterOffset' to 0 to reach delicate areas.")
+                        warnings.warn(f"layer {idl}: The Overhang Area is only {100 - remain2FillPercent:.0f}% filled with Arcs. Please try again with adapted Parameters: set 'ExtendArcsIntoPerimeter' higher to enlarge small areas. Lower the MaxDistanceFromPerimeter to follow the curvature more precise. Set 'ArcCenterOffset' to 0 to reach delicate areas.")
                         # plot_geometry(poly)
                         # plot_geometry(finalFilledSpace, color='b', kwargs={"filled"})
                         # plt.axis('square')
@@ -526,20 +526,32 @@ def getPtfromCmd(line: str, prevPoint = None, **kwargs: dict) -> Point | LineStr
     cmdType = None
     line = line.split(";", 1)[0]  # Remove comments
     cmds = line.split(" ")
-    for c in cmds:
-        if cmdType is None and re.search(r"G\d", c):
-            cmdType = c
-        if x is None and "X" in c:
-            x = float(c[1:])  # Extract X coordinate
-        elif "Y" in c:
-            y = float(c[1:])  # Extract Y coordinate
-            if prevPoint is None or re.search("G[0,1]", cmdType): # If this is a linear movement
+    if re.search(r"G[0-3]", cmds[0]):
+        cmdType = cmds.pop(0)
+        for c in cmds:
+            if x is None and "X" in c:
+                try:
+                    x = float(c[1:])  # Extract X coordinate
+                except ValueError:
+                    break
+            elif "Y" in c:
+                try:
+                    y = float(c[1:])  # Extract Y coordinate
+                except ValueError:
+                    break
+                if prevPoint is None or re.search("G[0,1]", cmdType): # If this is a linear movement
+                    break
+            elif "I" in c:
+                try:
+                    i = float(c[1:])  # Extract X offset
+                except ValueError:
+                    break
+            elif "J" in c:
+                try:
+                    j = float(c[1:])  # Extract Y offset
+                except ValueError:
+                    break
                 break
-        elif "I" in c:
-            i = float(c[1:])  # Extract X offset
-        elif "J" in c:
-            j = float(c[1:])  # Extract Y offset
-            break
 
     
     if x is not None and y is not None:
