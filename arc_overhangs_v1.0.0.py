@@ -575,11 +575,11 @@ def makePolygonFromGCode(lines: list) -> Polygon | None:
         if isTravelMove(line):
             break  # Stop if a travel move is encountered
 
-        if ";WIPE_END" in line:
+        if getSlicerSpecificName(";WIPE_END") in line:
             wiping = False  # End wiping mode
         elif wiping:
             continue  # Skip lines during wiping
-        elif ";WIPE_START" in line:
+        elif getSlicerSpecificName(";WIPE_START") in line:
             wiping = True  # Start wiping mode
 
         if "G1 X" in line:
