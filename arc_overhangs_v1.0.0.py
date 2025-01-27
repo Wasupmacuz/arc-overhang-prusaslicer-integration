@@ -172,9 +172,9 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
     # The slicer settings will be imported from GCode. However, some are Arc-specific and need to be adapted by you.
     AddManualSettingsDict: dict[str, Any] = {
         # Adapt these settings as needed for your specific geometry/printer:
-        "AllowedArcRetries": 0,  # Tries at slightly different points if arc generation fails.
-        "AllowedSpaceForArcs": Polygon([[0, 0], [500, 0], [500, 500], [0, 500]]),  # Control in which areas Arcs shall be generated
+        "AllowedArcRetries": 2,  # Tries at slightly different points if arc generation fails.
         "CheckForAllowedSpace": False,  # Use the following x&y filter or not
+        "AllowedSpaceForArcs": Polygon([[0, 0], [500, 0], [500, 500], [0, 500]]),  # Control in which areas Arcs shall be generated
         "ArcCenterOffset": 1.5 * gCodeSettingDict.get("nozzle_diameter"),  # Unit: mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.
         "ArcExtrusionMultiplier": 1.35, # Multiplies how much filament will be extruded while printing arcs.
         "ArcFanSpeed": 255,  # Cooling to full blast = 255
@@ -189,7 +189,7 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "ExtendArcDist": gCodeSettingDict.get("nozzle_diameter"),  # Extend Arcs perpendicularly for better bonding between them. Unit: mm
         "ExtendArcsIntoPerimeter": 0.5 * gCodeSettingDict.get("extrusion_width"),  # Min = 0.5 extrusion width!, extends the Area for arc generation, put higher to go through small passages. Unit: mm
         "ExtendHilbertIntoPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Extends the Area for Hilbert curve generation, put higher to go through small passages. Unit: mm
-        "GCodeArcPtMinDist": 0.1,  # Min Distance between points on the Arcs to form separate GCode Command. Unit: mm
+        "GCodeArcPtMinDist": 0.1,  # Min distance between points on the Arcs to form separate GCode Command. Unit: mm
         "HilbertFillingPercentage": 100,  # Infill percentage of the massive layers with special cooling.
         "HilbertInfillExtrusionMultiplier": 1.05, # Multiplies how much filament will be extruded while printing Hilbert curves.
         "HilbertTravelEveryNSeconds": 6,  # When N seconds are driven, it will continue printing somewhere else (very rough approx).
@@ -211,7 +211,7 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "aboveArcsPerimeterFanSpeed": 25,  # 0 -> 255, 255 = 100%
         "aboveArcsPerimeterPrintSpeed": 3 * 60,  # Unit: mm/min
         "applyAboveFanSpeedToWholeLayer": True,
-        "CoolingSettingDetectionDistance": 5,  # If the GCode line is closer than this distance to an infill polygon, the cooling settings will be applied. Unit: mm
+        "CoolingSettingDetectionDistance": 3,  # If the GCode line is closer than this distance to an infill polygon, the cooling settings will be applied. Unit: mm
         "doSpecialCooling": True,  # Use to enable/disable Hilbert curves and slower movement above arc overhangs. Should be `True` to prevent warping
         "specialCoolingZdist": 3,  # Use the special cooling XX mm above the arcs.
 
@@ -222,8 +222,9 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "plotDetectedSolidInfillPoly": False,  # Plot each solid infill polygon. Use for debugging.
         "plotEachHilbert": False,  # Plot each generated Hilbert curve. Use for debugging.
         "plotStart": False,  # Plot the detected geometry in the previous layer and the StartLine for Arc-Generation. Use for debugging.
-        "PrintDebugVerification": False
+        "PrintDebugVerification": False  # Used for console logging of the process.
     }
+
     gCodeSettingDict.update(AddManualSettingsDict)
     return gCodeSettingDict
 
@@ -279,7 +280,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                 maxZ = layer.z + parameters.get("specialCoolingZdist")
                 idoffset = 1
                 currZ = layer.z
-                while currZ <= maxZ and idl + idoffset <= len(layerobjs) - 1:
+                while currZ < maxZ and idl + idoffset <= len(layerobjs) - 1:
                     currZ = layerobjs[idl + idoffset].z
                     layerobjs[idl + idoffset].oldpolys.extend(layer.validpolys)
                     layerobjs[idl + idoffset].indexOldPolys()
@@ -297,7 +298,6 @@ def main(gCodeFileStream, path2GCode) -> None:
                     
                     # Initialize
                     finalarcs = []
-                    arcs = []
                     arcs4gcode = []
                     
                     # Find StartPoint and StartLineString
@@ -363,7 +363,6 @@ def main(gCodeFileStream, path2GCode) -> None:
 
                     # Generate G-code for arc and insert at the beginning of the layer
                     eSteps = calcESteps(parameters)
-                    arcOverhangGCode.append(f"M106 S{round(parameters.get('bridge_fan_speed', 100) * 2.55)}\n")  # Turn cooling Fan on at Bridge Setting
                     for ida, arc in enumerate(arcs4gcode):
                         if not arc.is_empty:
                             arcGCode = arc2GCode(arcline=arc, eSteps=eSteps, arcidx=ida, kwargs=parameters)
@@ -1117,10 +1116,7 @@ class Layer():
         if not p:
             return False  # Skip if no point is extracted
         distances = self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1] # Return all distances to polygons that may be in the detection distance
-        for dist in distances:
-            if dist <= maxDetectionDistance:
-                return True  # Return True if any distance is within the threshold
-        return False  # Return False if everything was too far
+        return any(dist <= maxDetectionDistance for dist in distances) # Return True if any distance is within the threshold
 
     def spotFanSetting(self, lastfansetting: float) -> float:
         """Find and return the fan setting (M106) from the G-code lines."""
