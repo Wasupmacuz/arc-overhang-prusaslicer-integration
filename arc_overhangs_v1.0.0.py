@@ -79,6 +79,7 @@ from shapely import (
     distance,
     buffer,
     intersection,
+    segmentize
 )
 from shapely.geometry.base import GeometrySequence
 from shapely.ops import linemerge, unary_union
@@ -100,11 +101,10 @@ len=len
 
 slicer: str = None
 # Map from this slicer's settings to PrusaSlicer. If you add a new slicer, please submit a pull request!
-slicer_settings_map = {
+_SLICER_SETTINGS_MAP = {
     'PrusaSlicer': {
         "avoid_crossing_perimeters": "avoid_crossing_perimeters",
         "bridge_speed": "bridge_speed",
-        'bridge_fan_speed': 'bridge_fan_speed',
         "external_perimeters_first": "external_perimeters_first",
         'extrusion_width': 'extrusion_width',
         "filament_diameter": "filament_diameter",
@@ -123,7 +123,6 @@ slicer_settings_map = {
     'OrcaSlicer': {
         "reduce_crossing_wall": "avoid_crossing_perimeters",
         "bridge_speed": "bridge_speed",
-        'overhang_fan_speed': 'bridge_fan_speed',
         #"wall_sequence": "external_perimeters_first", SETTING HANDLED DIFFERENTLY, STORE AS DEFAULT NAME:
         "wall_sequence": "wall_sequence",
         'line_width': 'extrusion_width',
@@ -143,28 +142,29 @@ slicer_settings_map = {
     # Add mappings for other slicers
 }
 
+_EQUIVALENT_NAMES = {
+    "PrusaSlicer": {
+        ";TYPE:Bridge infill": ";TYPE:Bridge infill",
+        ";TYPE:External perimeter": ";TYPE:External perimeter",
+        ";TYPE:Overhang perimeter": ";TYPE:Overhang perimeter",
+        ";TYPE:Solid infill": ";TYPE:Solid infill",
+        ";WIPE_START": ";WIPE_START",
+        ";WIPE_END": ";WIPE_END",
+    },
+    "OrcaSlicer": {
+        ";TYPE:Bridge infill": ";TYPE:Bridge",
+        ";TYPE:External perimeter": ";TYPE:Outer wall",
+        ";TYPE:Overhang perimeter": ";TYPE:Overhang wall",
+        ";TYPE:Solid infill": ";TYPE:Internal solid infill",
+        ";WIPE_START": ";WIPE_START",
+        ";WIPE_END": ";WIPE_END",
+    },
+    # Add mappings for other slicers
+}
 def getSlicerSpecificName(name: str):
     if slicer == "PrusaSlicer":  # No need to map in this case, but the mapping is left to help contributors translate their own slicer.
         return name
-    equivalent_names = {
-        "PrusaSlicer": {
-            ";TYPE:Bridge infill": ";TYPE:Bridge infill",
-            ";TYPE:External perimeter": ";TYPE:External perimeter",
-            ";TYPE:Overhang perimeter": ";TYPE:Overhang perimeter",
-            ";TYPE:Solid infill": ";TYPE:Solid infill",
-        },
-        "OrcaSlicer": {
-            ";TYPE:Bridge infill": ";TYPE:Bridge",
-            ";TYPE:External perimeter": ";TYPE:Outer wall",
-            ";TYPE:Overhang perimeter": ";TYPE:Overhang wall",
-            ";TYPE:Solid infill": ";TYPE:Internal solid infill"
-        },
-        # Add mappings for other slicers
-    }
-    names = equivalent_names.get(slicer)
-    if names and name in names:
-        return names.get(name)
-    return name
+    return _EQUIVALENT_NAMES.get(slicer).get(name, name)
 
 ########## Parameters  - adjust values here as needed ##########
 def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
@@ -315,7 +315,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                     # print(f"number of concentric arcs generated:", len(concentricArcs))
                     if len(concentricArcs) < parameters.get("MinStartArcs"):
                         # Possibly bad chosen startpt, error handling:
-                        startpt = getStartPtOnLS(redistribute_vertices(startLineString, 0.1), parameters)
+                        startpt = getStartPtOnLS(segmentize(startLineString, 0.1), parameters)
                         concentricArcs = generateMultipleConcentricArcs(startpt, rMinStart, rMax, boundaryWithOutStartLine, poly, parameters)
                         if len(concentricArcs) < parameters.get("MinStartArcs"):  # Still insufficient start: try random
                             print(f"Layer {idl}: Using random Startpoint")
@@ -326,7 +326,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                                     break
                             if len(concentricArcs) < parameters.get("MinStartArcs"):
                                 for idr in range(10):
-                                    startpt = getStartPtOnLS(redistribute_vertices(startLineString, 0.1), parameters, choseRandom=True)
+                                    startpt = getStartPtOnLS(segmentize(startLineString, 0.1), parameters, choseRandom=True)
                                     concentricArcs = generateMultipleConcentricArcs(startpt, rMinStart, rMax, boundaryWithOutStartLine, poly, parameters)
                                     if len(concentricArcs) >= parameters.get("MinStartArcs"):
                                         break
@@ -858,14 +858,14 @@ class Layer():
                                 pts.extend(Point(coord) for coord in arc.coords)
                                 end = idl + start + 2
 
-                if ';WIPE_START' in line:
+                if getSlicerSpecificName(';WIPE_START') in line:
                     isWipeMove = True
                     if splitAtWipe:  # Split at wipe moves if requested
                         parts.append(pts)
                         partLocations.append((begin, end))
                         pts = []
                 
-                if ';WIPE_END' in line:
+                if getSlicerSpecificName(';WIPE_END') in line:
                     isWipeMove = False
             
             if len(pts) >= 2:  # Append the last set of points
@@ -1401,21 +1401,21 @@ def move_toward_point(start_point: Point, target_point: Point, distance: float, 
     # Return the new point
     return Point(new_x, new_y)
 
-def redistribute_vertices(geom: LineString, dist: float) -> LineString:  # TODO: consider shapely's segmentize(geometry, max_segment_length, ...)
-    """Redistribute vertices of a LineString or MultiLineString at a specified distance."""
-    if geom.geom_type == 'LineString':
-        num_vert = round(geom.length / dist)  # Calculate number of vertices
-        if num_vert == 0:
-            num_vert = 1  # Ensure at least one vertex
-        return LineString(
-            [geom.interpolate(float(n) / num_vert, normalized=True)  # Interpolate vertices
-             for n in range(num_vert + 1)])
-    elif geom.geom_type == 'MultiLineString':
-        parts = [redistribute_vertices(part, dist) for part in geom.geoms]  # Recursively process each part
-        return type(geom)([p for p in parts if not p.is_empty])  # Filter out empty parts
-    else:
-        warnings.warn('unhandled geometry %s', (geom.geom_type,))  # Warn for unsupported geometry types
-        return geom
+# def redistribute_vertices(geom: LineString, dist: float) -> LineString:  # TODO: consider shapely's segmentize(geometry, max_segment_length, ...)
+#     """Redistribute vertices of a LineString or MultiLineString at a specified distance."""
+#     if geom.geom_type == 'LineString':
+#         num_vert = ceil(geom.length / dist)  # Calculate number of vertices
+#         if num_vert == 0:
+#             num_vert = 1  # Ensure at least one vertex
+#         return LineString(
+#             [geom.interpolate(float(n) / num_vert, normalized=True)  # Interpolate vertices
+#              for n in range(num_vert + 1)])
+#     elif geom.geom_type == 'MultiLineString':
+#         parts = [redistribute_vertices(part, dist) for part in geom.geoms]  # Recursively process each part
+#         return type(geom)([p for p in parts if not p.is_empty])  # Filter out empty parts
+#     else:
+#         warnings.warn('unhandled geometry %s', (geom.geom_type,))  # Warn for unsupported geometry types
+#         return geom
 
 def generateMultipleConcentricArcs(startpt: Point, rMin: float, rMax: float, basePoly: Polygon, remainingSpace: Polygon, kwargs={}) -> list:
     """Generate concentric arcs within a given range of the radius and boundary."""
@@ -1536,7 +1536,7 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
                 key, value = line.split('=', 1)
                 key = key.strip()
                 value = value.strip()
-                internal_key = slicer_settings_map.get(slicer).get(key)
+                internal_key = _SLICER_SETTINGS_MAP.get(slicer).get(key)
                 if internal_key:
                     try:
                         gCodeSettingDict[internal_key] = literal_eval(value)
