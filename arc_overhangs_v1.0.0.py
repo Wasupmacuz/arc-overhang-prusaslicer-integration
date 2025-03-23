@@ -1206,9 +1206,11 @@ class Layer():
         p = getPtfromCmd(line)
         if not p:
             return False, maxDetectionDistance  # Skip if no point is extracted
-        distance = min(self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1]) # Return all distances to polygons that may be in the detection distance
-        if distance < maxDetectionDistance:
-            return True, distance # Return shortest distance within the threshold
+        distances = self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1]
+        if distances:
+            distance = min(distances) # Return all distances to polygons that may be in the detection distance
+            if distance < maxDetectionDistance:
+                return True, distance # Return shortest distance within the threshold
         return False, maxDetectionDistance
 
     def spotFanSetting(self, lastfansetting: float) -> float:
