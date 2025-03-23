@@ -46,10 +46,11 @@ KNOWN ISSUES:
 """
 
 #!/usr/bin/python
+from itertools import chain
 import sys
 import argparse
 import re
-from typing import Any, List
+from typing import Any, List, Tuple
 from math import (
     log2,
     ceil,
@@ -113,6 +114,8 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "ArcFanSpeed": 255,  # Cooling to full blast = 255
         "ArcMinPrintSpeed": 0.5 * 60,  # Unit: mm/min
         "ArcPrintSpeed": 1.5 * 60,  # Unit: mm/min
+        "UseCustomArcTemp": False, # Set to True to use a custom arc printing temperature
+        "CustomArcTemp": 200, # The temperature (in °C) to wait for before printing arcs
         "ArcSlowDownBelowThisDuration": 3,  # Arc Time below this Duration => slow down, Unit: sec
         "ArcPointsPerMillimeter": 10,  # Higher will slow down the code but give better support for following arcs. Recommended values: >=10 when "UseLeastAmountOfCenterPoints": False; else, value can be as low as 1.
         "ArcTravelFeedRate": 30 * 60,  # Slower travel speed, Unit: mm/min
@@ -217,6 +220,7 @@ _SLICER_SETTINGS_MAP = {
         "retract_length": "retract_length",
         'retract_speed': 'retract_speed',
         "solid_infill_extrusion_width": "solid_infill_extrusion_width",
+        'temperature': 'temperature',
         'travel_speed': 'travel_speed',
         'use_relative_e_distances': 'use_relative_e_distances',
     },
@@ -236,6 +240,7 @@ _SLICER_SETTINGS_MAP = {
         "retraction_length": "retract_length",
         'retraction_speed': 'retract_speed',
         "internal_solid_infill_line_width": "solid_infill_extrusion_width",
+        'nozzle_temperature': 'temperature',
         'travel_speed': 'travel_speed',
         'use_relative_e_distances': 'use_relative_e_distances',
     },
@@ -403,7 +408,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                     # Poly finished
                     remain2FillPercent = (1 - finalFilledSpace.area / poly.area) * 100
                     if remain2FillPercent > 100 - parameters.get("WarnBelowThisFillingPercentage"):
-                        # layer.failedArcGenPolys.append(poly) # Bugged percentage detection, not reliable TODO
+                        # layer.failedArcGenPolys.append(poly) # Percentage detection not reliable TODO
                         warnings.warn(f"layer {idl}: The Overhang Area is only {100 - remain2FillPercent:.0f}% filled with Arcs. Please try again with adapted Parameters: set 'ExtendArcsIntoPerimeter' higher to enlarge small areas. Lower the MaxDistanceFromPerimeter to follow the curvature more precise. Set 'ArcCenterOffset' to 0 to reach delicate areas.")
                         # plot_geometry(poly)
                         # plot_geometry(finalFilledSpace, color='b', kwargs={"filled"})
@@ -449,6 +454,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                 isInjected = False
                 hilbertIsInjected = False
                 curPrintSpeed = "G1 F600"
+                curPrintSpeedVal = 600
                 messedWithSpeed = False
                 messedWithFan = False
                 if gcodeWasModified:
@@ -463,6 +469,9 @@ def main(gCodeFileStream, path2GCode) -> None:
                         if ";TYPE" in line and not isInjected:  # Inject arcs at the very start
                             injectionStart = idline
                             modifiedlayer.lines.append(";TYPE:Arc infill\n")
+                            if parameters.get("UseCustomArcTemp", False):
+                                # Wait for the custom temperature before beginning arcs.
+                                modifiedlayer.lines.append(f"M109 S{parameters.get('CustomArcTemp')} ; Wait for custom arc temp\n")
                             modifiedlayer.lines.append(f"M106 S{parameters.get('ArcFanSpeed')}\n")
                             for overhangline in arcOverhangGCode:
                                 for arcline in overhangline:
@@ -476,6 +485,9 @@ def main(gCodeFileStream, path2GCode) -> None:
                                     modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters, ignoreZ=True))  # Travel
                                     modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters))  # Extrude
                                     break
+                            if parameters.get("UseCustomArcTemp", False):
+                                # Restore the normal temperature after arcs are printed.
+                                modifiedlayer.lines.append(f"M109 S{parameters.get(getSlicerSpecificName("temperature"))} ; Restore normal temperature\n")
                     if layer.oldpolys and parameters.get("doSpecialCooling"):
                         if getSlicerSpecificName(";TYPE:Solid infill") in line and not hilbertIsInjected:  # Startpoint of solid infill: print all hilberts from here.
                             hilbertIsInjected = True
@@ -492,13 +504,25 @@ def main(gCodeFileStream, path2GCode) -> None:
                                     modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters))  # Extrude
                                     break
                     if "G1 F" in line.split(";", 1)[0]:  # Special block-speed-command
-                        curPrintSpeed = line
-                    if layer.exportThisLine(idline - 1):  # Subtract 1 because there's a disconnect between line IDs here and line IDs when calculating which lines to delete. Should fix TODO
-                        if layer.isClose2Bridging(line, parameters.get("CoolingSettingDetectionDistance")):
+                        curPrintSpeed: str = line
+                        curPrintSpeedVal = int(curPrintSpeed[4:])
+                    if layer.exportThisLine(idline - 1):  # Subtract 1 because there's a disconnect between line IDs here and line IDs when calculating which lines to delete (TODO fix)
+                        close, distance_to_arc = layer.dist2Bridging(line, parameters.get("CoolingSettingDetectionDistance", 3))
+                        if close:  # Ensure we have a valid point and arcs exist
+                            # Determine new print speed based on distance
+                            new_speed = compute_print_speed(
+                                distance_to_arc,
+                                parameters.get("aboveArcsPerimeterPrintSpeed"),  # Slowest speed near arcs
+                                curPrintSpeedVal,  # Normal speed
+                                parameters.get("CoolingSettingDetectionDistance", 3)  # Max distance for speedup
+                            )
+
                             if not messedWithFan:
                                 modifiedlayer.lines.append(f"M106 S{parameters.get('aboveArcsFanSpeed')}\n")
                                 messedWithFan = True
-                            modline = line.strip("\n") + f" F{parameters.get('aboveArcsPerimeterPrintSpeed')}\n"
+
+                            # Modify line to include adjusted speed
+                            modline = line.strip("\n") + f" F{new_speed:.2f} ; Near arc speed: {100*(new_speed / float(curPrintSpeedVal)):.1f}%\n"
                             modifiedlayer.lines.append(modline)
                             messedWithSpeed = True
                         else:
@@ -506,7 +530,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                                 modifiedlayer.lines.append(f"M106 S{layer.fansetting:.0f}\n")
                                 messedWithFan = False
                             if messedWithSpeed:
-                                modifiedlayer.lines.append(curPrintSpeed + "\n")
+                                modifiedlayer.lines.append(curPrintSpeed)
                                 messedWithSpeed = False
                             modifiedlayer.lines.append(line)
                 if messedWithFan:
@@ -1042,7 +1066,7 @@ class Layer():
                             verified = True
                             break
                     for intersectId in overIntersectors:
-                        if intersects(poly, prevIndexedOverhangPerimeters.geometries[intersectId]):  # Check if this poly intersects an overhang
+                        if intersects(poly, prevIndexedOverhangPerimeters.geometries[intersectId]) and not covers(prevIndexedOverhangPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an overhang
                             verified = True
                             break
                 if verified:
@@ -1175,15 +1199,17 @@ class Layer():
         
         return compositeList
 
-    def isClose2Bridging(self, line: str, maxDetectionDistance: float = 3) -> bool:
-        """Check if a G-code line is close to a bridging area."""
+    def dist2Bridging(self, line: str, maxDetectionDistance: float = 3) -> Tuple[bool, float]:
+        """Check a G-code line's distance to a bridging area."""
         if not "G1" in line:
-            return False  # Skip non-G1 lines
+            return False, maxDetectionDistance  # Skip non-G1 lines
         p = getPtfromCmd(line)
         if not p:
-            return False  # Skip if no point is extracted
-        distances = self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1] # Return all distances to polygons that may be in the detection distance
-        return any(dist <= maxDetectionDistance for dist in distances) # Return True if any distance is within the threshold
+            return False, maxDetectionDistance  # Skip if no point is extracted
+        distance = min(self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1]) # Return all distances to polygons that may be in the detection distance
+        if distance < maxDetectionDistance:
+            return True, distance # Return shortest distance within the threshold
+        return False, maxDetectionDistance
 
     def spotFanSetting(self, lastfansetting: float) -> float:
         """Find and return the fan setting (M106) from the G-code lines."""
@@ -1627,6 +1653,19 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
         gCodeSettingDict["perimeter_extrusion_width"] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%")) / 100)
 
     return gCodeSettingDict
+
+def compute_print_speed(distance, min_speed, max_speed, max_distance):
+    """
+    Interpolates between min_speed and max_speed based on distance.
+    - distance: the measured distance from the arc boundary.
+    - min_speed: the speed to use when distance is 0 or very close.
+    - max_speed: the normal print speed (when distance >= max_distance).
+    - max_distance: the distance at which normal speed is reached.
+    """
+    if distance >= max_distance:
+        return max_speed
+    else:
+        return min_speed + (max_speed - min_speed) * (distance / float(max_distance))
 
 def checkforNecesarrySettings(gCodeSettingDict: dict) -> bool:
     """Check if necessary slicer settings are enabled for the script to work."""
