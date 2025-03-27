@@ -62,6 +62,7 @@ from math import (
     degrees,
     radians
 )
+from numpy.typing import NDArray
 from shapely import (
     Geometry,
     GeometryCollection,
@@ -70,8 +71,10 @@ from shapely import (
     Polygon,
     LineString,
     MultiLineString,
+    covered_by,
     covers,
     difference,
+    get_coordinates,
     points,
     prepare,
     destroy_prepared,
@@ -360,7 +363,6 @@ def main(gCodeFileStream, path2GCode) -> None:
                         warnings.warn("Skipping Polygon because no StartLine Found")
                         layer.failedArcGenPolys.append(poly)
                         continue
-                    prepare(startLineString)
                     prepare(boundaryWithOutStartLine)
                     startpt = getStartPtOnLS(startLineString, parameters)
 
@@ -388,7 +390,6 @@ def main(gCodeFileStream, path2GCode) -> None:
                                 warnings.warn("Initialization Error: no concentric Arc could be generated at startpoints, moving on")
                                 layer.failedArcGenPolys.append(poly)
                                 continue
-                    destroy_prepared(startLineString)
                     destroy_prepared(boundaryWithOutStartLine)
                     arcBoundaries = getArcBoundaries(concentricArcs)
                     finalarcs.append(concentricArcs[-1])
@@ -797,13 +798,30 @@ class Layer():
                 poly = makePolygonFromGCode(linesWithStart)  # Create polygon from collected lines
                 if poly:
                     self.extPerimeterPolys.append(poly)  # Add polygon to the list
+                    prepare(poly)
                 extPerimeterIsStarted = False
+        holesToRemove = []
+        for poly1 in self.extPerimeterPolys:
+            for poly2 in self.extPerimeterPolys:
+                if poly1==poly2 or poly1 in holesToRemove or poly2 in holesToRemove:
+                    continue
+                if covers(poly1, poly2):
+                    poly1 = difference(poly1, poly2)
+                    holesToRemove.append(poly2)
+                elif covered_by(poly1, poly2):
+                    poly2 = difference(poly2, poly1)
+                    holesToRemove.append(poly1)
+        for hole in holesToRemove:
+            try:
+                self.extPerimeterPolys.remove(hole)
+            except ValueError:
+                print("Polygon does not exist.")
 
     def makeStartLineString(self, poly: Polygon, kwargs: dict = {}):
         """Create a starting LineString for arc generation by intersecting with previous layer's external perimeter."""
         if not self.extPerimeterPolys:
             self.makeExternalPerimeter2Polys()  # Generate external perimeter polygons if not available
-        
+
         if len(self.extPerimeterPolys) < 1:
             warnings.warn(f"Layer {self.layernumber}: No ExternalPerimeterPolys found in prev Layer")
             return None, None
@@ -1303,12 +1321,15 @@ def fill_remaining_space(last_arc: Arc, r_min: float, r_max: float, min_distance
     text = "Recursion not needed to fill space."
     for id in range(parameters.get("SafetyBreak_MaxArcNumber")):
         remaining_space = difference(poly, buffer(filled_space, parameters.get("ArcWidth") / 2))  # Calculate remaining space
-        farthest_points, longest_distances = get_farthest_points(filled_space.boundary, poly, allowedRetries + 1)  # Find the farthest point
+        farthest_points, longest_distances, bisectors = get_farthest_points(filled_space.boundary, poly, allowedRetries + 1)  # Find the farthest point
 
         if farthest_points.size == 0 or longest_distances[failureCount] < min_distance_from_perimeter:
             break  # Stop if no valid point or distance is too small
-
-        start_pt = move_toward_point(farthest_points[failureCount], last_arc.center, parameters.get("ArcCenterOffset", 2))  # Adjust start point
+        
+        # Move in the direction of the angle bisector defined by the furthest point and its neighbors
+        # (i.e. Move toward the previous arc's center by traveling along the opposite direction of the arc's "normal")
+        start_pt = Point(farthest_points[failureCount].x + parameters.get("ArcCenterOffset", 2) * bisectors[failureCount][0],
+                         farthest_points[failureCount].y + parameters.get("ArcCenterOffset", 2) * bisectors[failureCount][1])
         concentric_arcs = generateMultipleConcentricArcs(start_pt, r_min, r_max, poly.boundary, remaining_space, parameters)  # Generate arcs
 
         if len(concentric_arcs) == 0:
@@ -1318,8 +1339,7 @@ def fill_remaining_space(last_arc: Arc, r_min: float, r_max: float, min_distance
             continue
         
         failureCount = 0
-        last_arc = concentric_arcs[-1]  # Update the last arc
-        filled_space = intersection(poly, unary_union((filled_space, Polygon(last_arc.circle))))  # Merge filled space with new arcs
+        filled_space = intersection(poly, unary_union((filled_space, Polygon(concentric_arcs[-1].circle))))  # Merge filled space with new arcs
         arcs.extend(concentric_arcs)  # Add new arcs to the list
         
         text = f"Filling remaining space. Iterations: {id}. Arcs this iteration: {len(concentric_arcs)}."
@@ -1412,7 +1432,7 @@ def create_circle_between_angles(center:Point, radius:float, startAngle:float, e
     points = np.column_stack((radius * np.sin(theta) + x, radius * np.cos(theta) + y))  # Compute circle points
     return LineString(points)
 
-def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points: int = 1) -> tuple:
+def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points: int = 1) -> Tuple[NDArray, NDArray, NDArray]:
     """
     Find the point on a given geometry that is farthest away from the boundary of a polygon.
     
@@ -1432,33 +1452,37 @@ def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points:
     """
     if from_geom.is_empty:
         return None, None  # Return None if the input geometry is empty
-    
-    prepare(to_poly.boundary)  # Prepare the polygon boundary for faster distance calculations
 
-    try:
-        coords = points(from_geom.coords)  # Extract points from the geometry's coordinates
-    except NotImplementedError:
-        # Handle MultiLineString by extracting coordinates from each part
-        if isinstance(from_geom, MultiLineString):
-            coords = []
-            for geom in from_geom.geoms:
-                coords.extend(geom.coords)
-            coords = points(coords)
+    coords = points(get_coordinates(from_geom))  # Extract points from the geometry's coordinates
 
     distances = distance(to_poly.boundary, coords)  # Calculate distances from each point to the polygon's boundary
     farthest_points = []
     longest_distances = []
-    # Get indices sorted by descending distances
-    sorted_indices = np.argsort(distances)[::-1]
-
-    # Select top 'number_of_points' indices
-    top_indices = sorted_indices[:number_of_points]
+    # Get the top indices sorted by descending distances
+    top_indices = np.argsort(distances, kind='heapsort')[:-(number_of_points + 1):-1]
 
     # Retrieve the longest distances and farthest points
     longest_distances = distances[top_indices]
     farthest_points = coords[top_indices]
+
+    bisector_vectors = []
+    for id in top_indices:
+        p0, p1, p2 = coords[id], coords[id-1], coords[id+1]
+        v_a = np.array([p1.x - p0.x, p1.y - p0.y])
+        v_b = np.array([p2.x - p0.x, p2.y - p0.y])
+        bisector_vectors.append(get_angle_bisector(v_a, v_b))
     
-    return farthest_points, longest_distances
+    return farthest_points, longest_distances, bisector_vectors
+
+def get_angle_bisector(vec_a, vec_b):
+    """Calculates the normalized angle bisector."""
+
+    unit_a = vec_a / np.linalg.norm(vec_a)
+    unit_b = vec_b / np.linalg.norm(vec_b)
+
+    bisector_direction = unit_a + unit_b
+
+    return bisector_direction / np.linalg.norm(bisector_direction)
 
 def move_toward_point(start_point: Point, target_point: Point, distance: float, angle_correction: float = 0.0) -> Point:
     """Move a point by a set distance toward another point and adjust the angle direction"""
@@ -1495,22 +1519,6 @@ def move_toward_point(start_point: Point, target_point: Point, distance: float, 
     
     # Return the new point
     return Point(new_x, new_y)
-
-# def redistribute_vertices(geom: LineString, dist: float) -> LineString:  # TODO: consider shapely's segmentize(geometry, max_segment_length, ...)
-#     """Redistribute vertices of a LineString or MultiLineString at a specified distance."""
-#     if geom.geom_type == 'LineString':
-#         num_vert = ceil(geom.length / dist)  # Calculate number of vertices
-#         if num_vert == 0:
-#             num_vert = 1  # Ensure at least one vertex
-#         return LineString(
-#             [geom.interpolate(float(n) / num_vert, normalized=True)  # Interpolate vertices
-#              for n in range(num_vert + 1)])
-#     elif geom.geom_type == 'MultiLineString':
-#         parts = [redistribute_vertices(part, dist) for part in geom.geoms]  # Recursively process each part
-#         return type(geom)([p for p in parts if not p.is_empty])  # Filter out empty parts
-#     else:
-#         warnings.warn('unhandled geometry %s', (geom.geom_type,))  # Warn for unsupported geometry types
-#         return geom
 
 def generateMultipleConcentricArcs(startpt: Point, rMin: float, rMax: float, basePoly: Polygon, remainingSpace: Polygon, kwargs={}) -> list:
     """Generate concentric arcs within a given range of the radius and boundary."""
@@ -1658,7 +1666,7 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
 
 def compute_print_speed(distance, min_speed, max_speed, max_distance):
     """
-    Interpolates between min_speed and max_speed based on distance.
+    Interpolates quadratically between min_speed and max_speed based on distance.
     - distance: the measured distance from the arc boundary.
     - min_speed: the speed to use when distance is 0 or very close.
     - max_speed: the normal print speed (when distance >= max_distance).
@@ -1667,7 +1675,7 @@ def compute_print_speed(distance, min_speed, max_speed, max_distance):
     if distance >= max_distance:
         return max_speed
     else:
-        return min_speed + (max_speed - min_speed) * (distance / float(max_distance))
+        return min_speed + (max_speed - min_speed) * (distance*distance / float(max_distance*max_distance))
 
 def checkforNecesarrySettings(gCodeSettingDict: dict) -> bool:
     """Check if necessary slicer settings are enabled for the script to work."""
