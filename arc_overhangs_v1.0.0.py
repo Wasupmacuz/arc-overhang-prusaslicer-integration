@@ -506,7 +506,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                                     break
                     if "G1 F" in line.split(";", 1)[0]:  # Special block-speed-command
                         curPrintSpeed: str = line
-                        curPrintSpeedVal = int(curPrintSpeed[4:])
+                        curPrintSpeedVal = float(curPrintSpeed[4:])
                     if layer.exportThisLine(idline - 1):  # Subtract 1 because there's a disconnect between line IDs here and line IDs when calculating which lines to delete (TODO fix)
                         close, distance_to_arc = layer.dist2Bridging(line, parameters.get("CoolingSettingDetectionDistance", 3))
                         if close:  # Ensure we have a valid point and arcs exist
