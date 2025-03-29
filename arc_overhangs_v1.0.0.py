@@ -132,8 +132,8 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "HilbertFillingPercentage": 100,  # Infill percentage of the massive layers with special cooling.
         "HilbertInfillExtrusionMultiplier": 1.05, # Multiplies how much filament will be extruded while printing Hilbert curves.
         "HilbertTravelEveryNSeconds": 6,  # When N seconds are driven, it will continue printing somewhere else (very rough approx).
-        "MinArea": 0,  # Minimum overhang area to generate arcs. Unit: mm²
-        "MinBridgeLength": 0,  # Minimum bridge length to generate arcs. Unit: mm
+        "MinArea": 5,  # Minimum overhang area to generate arcs. Unit: mm²
+        "MinBridgeLength": 5,  # Minimum bridge length to generate arcs. Unit: mm
         "MinDistanceFromPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Control how much bumpiness you allow between arcs and perimeter. Lower will follow perimeter better, but create a lot of very small arcs. Should be more than 1 Arc width! Unit: mm
         "MinStartArcs": 2,  # How many arcs shall be generated in the first step
         "Path2Output": r"",  # Leave empty to overwrite the file or write to a new file. Full path required.
@@ -1225,7 +1225,7 @@ class Layer():
         if not p:
             return False, maxDetectionDistance  # Skip if no point is extracted
         distances = self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1]
-        if distances:
+        if distances.size > 0:
             distance = min(distances) # Return all distances to polygons that may be in the detection distance
             if distance < maxDetectionDistance:
                 return True, distance # Return shortest distance within the threshold
@@ -1467,7 +1467,7 @@ def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points:
 
     bisector_vectors = []
     for id in top_indices:
-        p0, p1, p2 = coords[id], coords[id-1], coords[id+1]
+        p0, p1, p2 = coords[id], coords[id-1], coords[(id+1)%len(coords)]
         v_a = np.array([p1.x - p0.x, p1.y - p0.y])
         v_b = np.array([p2.x - p0.x, p2.y - p0.y])
         bisector_vectors.append(get_angle_bisector(v_a, v_b))
