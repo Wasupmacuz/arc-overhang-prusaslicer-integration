@@ -100,65 +100,10 @@ min=min
 len=len
 
 ########## Parameters  - adjust values here as needed ##########
-def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
-    """Merge two dictionaries and set some keys/values explicitly."""
-    # The slicer settings will be imported from GCode. However, some are Arc-specific and need to be adapted by you.
-    AddManualSettingsDict: dict[str, Any] = {
-        # Adapt these settings as needed for your specific geometry/printer:
-        "AllowedArcRetries": 2,  # Tries at slightly different points if arc generation fails.
-        "CheckForAllowedSpace": False,  # Use the following x&y filter or not
-        "AllowedSpaceForArcs": Polygon([[0, 0], [500, 0], [500, 500], [0, 500]]),  # Control in which areas Arcs shall be generated
-        "ArcCenterOffset": 1.5 * gCodeSettingDict.get("nozzle_diameter"),  # Unit: mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.
-        "ArcExtrusionMultiplier": 1.35, # Multiplies how much filament will be extruded while printing arcs.
-        "ArcFanSpeed": 255,  # Cooling to full blast = 255
-        "ArcMinPrintSpeed": 0.5 * 60,  # Unit: mm/min
-        "ArcPrintSpeed": 1.5 * 60,  # Unit: mm/min
-        "ArcSlowDownBelowThisDuration": 3,  # Arc Time below this Duration => slow down, Unit: sec
-        "ArcPointsPerMillimeter": 10,  # Higher will slow down the code but give better support for following arcs. Recommended values: >=10 when "UseLeastAmountOfCenterPoints": False; else, value can be as low as 1.
-        "ArcTravelFeedRate": 30 * 60,  # Slower travel speed, Unit: mm/min
-        "ArcWidth": gCodeSettingDict.get("nozzle_diameter") * 0.95,  # Change the spacing between the arcs, should be nozzle_diameter
-        "CornerImportanceMultiplier": 0.2,  # Startpoint for Arc generation is chosen close to the middle of the StartLineString and at a corner. Higher => Corner selection more important.
-        "DistanceBetweenPointsOnStartLine": 0.1,  # Used for redistribution, if start fails.
-        "ExtendArcDist": gCodeSettingDict.get("nozzle_diameter"),  # Extend Arcs perpendicularly for better bonding between them. Unit: mm
-        "ExtendArcsIntoPerimeter": 0.5 * gCodeSettingDict.get("extrusion_width"),  # Min = 0.5 extrusion width!, extends the Area for arc generation, put higher to go through small passages. Unit: mm
-        "ExtendHilbertIntoPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Extends the Area for Hilbert curve generation, put higher to go through small passages. Unit: mm
-        "GCodeArcPtMinDist": 0.1,  # Min distance between points on the Arcs to form separate GCode Command. Unit: mm
-        "HilbertFillingPercentage": 100,  # Infill percentage of the massive layers with special cooling.
-        "HilbertInfillExtrusionMultiplier": 1.05, # Multiplies how much filament will be extruded while printing Hilbert curves.
-        "HilbertTravelEveryNSeconds": 6,  # When N seconds are driven, it will continue printing somewhere else (very rough approx).
-        "MinArea": 0,  # Minimum overhang area to generate arcs. Unit: mm²
-        "MinBridgeLength": 0,  # Minimum bridge length to generate arcs. Unit: mm
-        "MinDistanceFromPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Control how much bumpiness you allow between arcs and perimeter. Lower will follow perimeter better, but create a lot of very small arcs. Should be more than 1 Arc width! Unit: mm
-        "MinStartArcs": 2,  # How many arcs shall be generated in the first step
-        "Path2Output": r"",  # Leave empty to overwrite the file or write to a new file. Full path required.
-        "RMax": 30,  # The max radius of the arcs.
-        "ReplaceInternalBridging": True, # If true, will replace bridging that goes over external perimeters but does not have overhang perimeters nearby.
-        "SafetyBreak_MaxArcNumber": 2000,  # Max Number of Arc Start Points. Prevents While loop from running forever.
-        "TimeLapseEveryNArcs": 0,  # Deactivate with 0, inserts M240 after N ArcLines, 5 is a good value to start.
-        "UseLeastAmountOfCenterPoints": False,  # Always generates arcs until rMax is reached, divide the arcs into pieces if needed. Reduces the amount of center points.
-        "WarnBelowThisFillingPercentage": 90,  # Fill the overhang at least XX%, else don't replace overhang. Easier detection of errors in small/delicate areas. Unit: Percent
+def makeFullSettingDict(jsonSettingDict: dict, gCodeSettingDict: dict) -> dict:
+    """Merge two dictionaries"""
 
-        # Special cooling to prevent warping:
-        "aboveArcsFanSpeed": 25,  # 0 -> 255, 255 = 100%
-        "aboveArcsInfillPrintSpeed": 10 * 60,  # Unit: mm/min
-        "aboveArcsPerimeterFanSpeed": 25,  # 0 -> 255, 255 = 100%
-        "aboveArcsPerimeterPrintSpeed": 3 * 60,  # Unit: mm/min
-        "applyAboveFanSpeedToWholeLayer": True,
-        "CoolingSettingDetectionDistance": 3,  # If the GCode line is closer than this distance to an infill polygon, the cooling settings will be applied. Unit: mm
-        "doSpecialCooling": True,  # Use to enable/disable Hilbert curves and slower movement above arc overhangs. Should be `True` to prevent warping
-        "specialCoolingZdist": 3,  # Use the special cooling XX mm above the arcs.
-
-        # Settings for easier debugging:
-        "plotArcsEachStep": False,  # Plot arcs for every filled polygon. Use for debugging.
-        "plotArcsFinal": False,  # Plot arcs for every filled polygon, when completely filled. Use for debugging.
-        "plotDetectedInfillPoly": False,  # Plot each detected overhang polygon. Use for debugging.
-        "plotDetectedSolidInfillPoly": False,  # Plot each solid infill polygon. Use for debugging.
-        "plotEachHilbert": False,  # Plot each generated Hilbert curve. Use for debugging.
-        "plotStart": False,  # Plot the detected geometry in the previous layer and the StartLine for Arc-Generation. Use for debugging.
-        "PrintDebugVerification": False  # Used for console logging of the process.
-    }
-
-    gCodeSettingDict.update(AddManualSettingsDict)
+    gCodeSettingDict.update(jsonSettingDict)
     return gCodeSettingDict
 
 slicer: str = None
@@ -278,7 +223,7 @@ def getSlicerSpecificName(name: str):
 ################################# MAIN FUNCTION #################################
 #################################################################################
 #at the top, for better reading
-def main(gCodeFileStream, path2GCode) -> None:
+def main(gCodeFileStream, path2GCode, json_settings) -> None:
     """Process G-code to generate and inject arc infill for overhangs."""
     gCodeLines = gCodeFileStream.readlines()
     gCodeSettingDict = readSettingsFromGCode2dict(gcodeLines=gCodeLines, fallbackValuesDict={"Fallback_nozzle_diameter": 0.4, "Fallback_filament_diameter": 1.75})  # ADD FALLBACK VALUES HERE
@@ -1773,22 +1718,35 @@ warnings.showwarning = _warning
 
 ################################# MAIN EXECUTION #################################
 ##################################################################################
+
+import json
 def parse_args():
-    parser = argparse.ArgumentParser(description="Process overhangs within G-code files into circular arcs.")
-    parser.add_argument('path', type=str, help='Path to the G-code file')
+    parser = argparse.ArgumentParser(description="Process overhangs within G-code files into circular arcs.",
+                                     usage="%(prog)s [SETTINGS_JSON] [GCODE_FILE]")
+    parser.add_argument('settings', type=str, help='Path to JSON settings file')
+    parser.add_argument('gcode', type=str, help='Path to the G-code file')
     parser.add_argument('--skip-input', action='store_true', help='Skip any user input prompts (Windows only)')
     return parser.parse_args()
 
+# Modify main execution block
 if __name__ == "__main__":
     args = parse_args()
+    
+    # Load JSON settings first
+    try:
+        with open(args.settings, 'r') as f:
+            json_settings = json.load(f)
+    except Exception as e:
+        input(f"Error loading JSON settings: {str(e)}. Press Enter to exit.")
+        sys.exit(1)
 
-    # Get file stream and path based on the provided path
-    gCodeFileStream, path2GCode = getFileStreamAndPath(args.path)
+    # Get GCode file stream
+    gCodeFileStream, path2GCode = getFileStreamAndPath(args.gcode)
 
     # Determine whether to skip input based on the platform and command line argument
     skipInput = args.skip_input or platform.system() != "Windows"
 
     # Call the main function with the arguments
-    main(gCodeFileStream, path2GCode)
+    main(gCodeFileStream, path2GCode, json_settings)
     if not skipInput:
         input("Press enter to exit.")
