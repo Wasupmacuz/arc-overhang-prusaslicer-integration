@@ -49,7 +49,8 @@ KNOWN ISSUES:
 import sys
 import argparse
 import re
-from typing import Any, List
+import traceback
+from typing import Any, List, Tuple
 from math import (
     log2,
     ceil,
@@ -61,6 +62,7 @@ from math import (
     degrees,
     radians
 )
+from numpy.typing import NDArray
 from shapely import (
     Geometry,
     GeometryCollection,
@@ -69,8 +71,11 @@ from shapely import (
     Polygon,
     LineString,
     MultiLineString,
+    covered_by,
     covers,
     difference,
+    get_coordinates,
+    make_valid,
     points,
     prepare,
     destroy_prepared,
@@ -82,6 +87,7 @@ from shapely import (
     segmentize
 )
 from shapely.geometry.base import GeometrySequence
+from shapely.lib import is_empty
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 import matplotlib.pyplot as plt
@@ -162,6 +168,7 @@ _SLICER_SETTINGS_MAP = {
         "retract_length": "retract_length",
         'retract_speed': 'retract_speed',
         "solid_infill_extrusion_width": "solid_infill_extrusion_width",
+        'temperature': 'temperature',
         'travel_speed': 'travel_speed',
         'use_relative_e_distances': 'use_relative_e_distances',
     },
@@ -181,6 +188,7 @@ _SLICER_SETTINGS_MAP = {
         "retraction_length": "retract_length",
         'retraction_speed': 'retract_speed',
         "internal_solid_infill_line_width": "solid_infill_extrusion_width",
+        'nozzle_temperature': 'temperature',
         'travel_speed': 'travel_speed',
         'use_relative_e_distances': 'use_relative_e_distances',
     },
@@ -234,14 +242,15 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
         input("Can not run script, gcode unmodified. Press enter to close.")
         raise ValueError("Incompatible Settings used!")
     
+    # Initialize variables
     layerobjs = []
     gcodeWasModified = False
     numOverhangs = 0
+    lastfansetting = 0
     
     layers = splitGCodeIntoLayers(gcode=gCodeLines)
     gCodeFileStream.close()
     print("layers:", len(layers))
-    lastfansetting = 0  # Initialize variable
     
     for idl, layerlines in enumerate(layers):
         layer = Layer(layerlines, parameters, idl)
@@ -300,7 +309,6 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
                         warnings.warn("Skipping Polygon because no StartLine Found")
                         layer.failedArcGenPolys.append(poly)
                         continue
-                    prepare(startLineString)
                     prepare(boundaryWithOutStartLine)
                     startpt = getStartPtOnLS(startLineString, parameters)
 
@@ -328,7 +336,6 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
                                 warnings.warn("Initialization Error: no concentric Arc could be generated at startpoints, moving on")
                                 layer.failedArcGenPolys.append(poly)
                                 continue
-                    destroy_prepared(startLineString)
                     destroy_prepared(boundaryWithOutStartLine)
                     arcBoundaries = getArcBoundaries(concentricArcs)
                     finalarcs.append(concentricArcs[-1])
@@ -348,7 +355,7 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
                     # Poly finished
                     remain2FillPercent = (1 - finalFilledSpace.area / poly.area) * 100
                     if remain2FillPercent > 100 - parameters.get("WarnBelowThisFillingPercentage"):
-                        # layer.failedArcGenPolys.append(poly) # Bugged percentage detection, not reliable TODO
+                        # layer.failedArcGenPolys.append(poly) # Percentage detection not reliable TODO
                         warnings.warn(f"layer {idl}: The Overhang Area is only {100 - remain2FillPercent:.0f}% filled with Arcs. Please try again with adapted Parameters: set 'ExtendArcsIntoPerimeter' higher to enlarge small areas. Lower the MaxDistanceFromPerimeter to follow the curvature more precise. Set 'ArcCenterOffset' to 0 to reach delicate areas.")
                         # plot_geometry(poly)
                         # plot_geometry(finalFilledSpace, color='b', kwargs={"filled"})
@@ -408,6 +415,9 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
                         if ";TYPE" in line and not isInjected:  # Inject arcs at the very start
                             injectionStart = idline
                             modifiedlayer.lines.append(";TYPE:Arc infill\n")
+                            if parameters.get("UseCustomArcTemp", False):
+                                # Wait for the custom temperature before beginning arcs.
+                                modifiedlayer.lines.append(f"M109 S{parameters.get('CustomArcTemp')} ; Wait for custom arc temp\n")
                             modifiedlayer.lines.append(f"M106 S{parameters.get('ArcFanSpeed')}\n")
                             for overhangline in arcOverhangGCode:
                                 for arcline in overhangline:
@@ -421,6 +431,9 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
                                     modifiedlayer.lines.append(line2TravelMove(layer.lines[id], parameters, ignoreZ=True))  # Travel
                                     modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters))  # Extrude
                                     break
+                            if parameters.get("UseCustomArcTemp", False):
+                                # Restore the normal temperature after arcs are printed.
+                                modifiedlayer.lines.append(f"M109 S{parameters.get(getSlicerSpecificName("temperature"))} ; Restore normal temperature\n")
                     if layer.oldpolys and parameters.get("doSpecialCooling"):
                         if getSlicerSpecificName(";TYPE:Solid infill") in line and not hilbertIsInjected:  # Startpoint of solid infill: print all hilberts from here.
                             hilbertIsInjected = True
@@ -451,7 +464,7 @@ def main(gCodeFileStream, path2GCode, json_settings) -> None:
                                 modifiedlayer.lines.append(f"M106 S{layer.fansetting:.0f}\n")
                                 messedWithFan = False
                             if messedWithSpeed:
-                                modifiedlayer.lines.append(curPrintSpeed + "\n")
+                                modifiedlayer.lines.append(curPrintSpeed)
                                 messedWithSpeed = False
                             modifiedlayer.lines.append(line)
                 if messedWithFan:
@@ -608,7 +621,7 @@ class Layer():
         self.polys=[]
         self.validpolys=[]
         self.indexedValidPolys=STRtree([])
-        self.extPerimeterPolys=[]
+        self.extPerimeterPolys: List[Polygon]=[]
         self.failedArcGenPolys=[]
         self.failedSolidInfillLocations=[]
         self.binfills=[]
@@ -718,13 +731,36 @@ class Layer():
                 poly = makePolygonFromGCode(linesWithStart)  # Create polygon from collected lines
                 if poly:
                     self.extPerimeterPolys.append(poly)  # Add polygon to the list
+                    prepare(poly)
                 extPerimeterIsStarted = False
+        holesToRemove = []
+        for poly1 in self.extPerimeterPolys:
+            for poly2 in self.extPerimeterPolys:
+                if poly1==poly2 or poly1 in holesToRemove or poly2 in holesToRemove:
+                    continue
+                if not poly1.is_valid:
+                    make_valid(poly1)
+                if not poly2.is_valid:
+                    make_valid(poly2)
+                if not poly1.is_valid or not poly2.is_valid:
+                    continue
+                if covers(poly1, poly2):
+                    poly1 = difference(poly1, poly2)
+                    holesToRemove.append(poly2)
+                elif covered_by(poly1, poly2):
+                    poly2 = difference(poly2, poly1)
+                    holesToRemove.append(poly1)
+        for hole in holesToRemove:
+            try:
+                self.extPerimeterPolys.remove(hole)
+            except ValueError:
+                print("Polygon does not exist.")
 
     def makeStartLineString(self, poly: Polygon, kwargs: dict = {}):
         """Create a starting LineString for arc generation by intersecting with previous layer's external perimeter."""
         if not self.extPerimeterPolys:
             self.makeExternalPerimeter2Polys()  # Generate external perimeter polygons if not available
-        
+
         if len(self.extPerimeterPolys) < 1:
             warnings.warn(f"Layer {self.layernumber}: No ExternalPerimeterPolys found in prev Layer")
             return None, None
@@ -757,7 +793,7 @@ class Layer():
                 if kwargs.get("plotStart"):
                     print("Geom-Type:", poly.geom_type)
                     plot_geometry(poly, color="b")
-                    plot_geometry(ep, 'g')
+                    plot_geometry(ep, color='g', filled=True)
                     plot_geometry(startLineString, color="m")
                     plt.title("Start-Geometry")
                     plt.legend(["Poly4ArcOverhang", "External Perimeter prev Layer", "StartLine for Arc Generation"])
@@ -983,11 +1019,11 @@ class Layer():
                         break
                 if not verified and self.parameters.get("ReplaceInternalBridging"):
                     for intersectId in extOverlappers:
-                        if intersects(indexedExtPerimeters.geometries[intersectId], poly) and not covers(indexedExtPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an edge
+                        if intersects(indexedExtPerimeters.geometries[intersectId], poly) and not covered_by(indexedExtPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an edge
                             verified = True
                             break
                     for intersectId in overIntersectors:
-                        if intersects(poly, prevIndexedOverhangPerimeters.geometries[intersectId]):  # Check if this poly intersects an overhang
+                        if intersects(poly, prevIndexedOverhangPerimeters.geometries[intersectId]) and not covered_by(prevIndexedOverhangPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an overhang
                             verified = True
                             break
                 if verified:
@@ -1220,12 +1256,15 @@ def fill_remaining_space(last_arc: Arc, r_min: float, r_max: float, min_distance
     text = "Recursion not needed to fill space."
     for id in range(parameters.get("SafetyBreak_MaxArcNumber")):
         remaining_space = difference(poly, buffer(filled_space, parameters.get("ArcWidth") / 2))  # Calculate remaining space
-        farthest_points, longest_distances = get_farthest_points(filled_space.boundary, poly, allowedRetries + 1)  # Find the farthest point
+        farthest_points, longest_distances, bisectors = get_farthest_points(filled_space.boundary, poly, allowedRetries + 1)  # Find the farthest point
 
         if farthest_points.size == 0 or longest_distances[failureCount] < min_distance_from_perimeter:
             break  # Stop if no valid point or distance is too small
-
-        start_pt = move_toward_point(farthest_points[failureCount], last_arc.center, parameters.get("ArcCenterOffset", 2))  # Adjust start point
+        
+        # Move in the direction of the angle bisector defined by the furthest point and its neighbors
+        # (i.e. Move toward the previous arc's center by traveling along the opposite direction of the arc's "normal")
+        start_pt = Point(farthest_points[failureCount].x + parameters.get("ArcCenterOffset", 2) * bisectors[failureCount][0],
+                         farthest_points[failureCount].y + parameters.get("ArcCenterOffset", 2) * bisectors[failureCount][1])
         concentric_arcs = generateMultipleConcentricArcs(start_pt, r_min, r_max, poly.boundary, remaining_space, parameters)  # Generate arcs
 
         if len(concentric_arcs) == 0:
@@ -1235,8 +1274,7 @@ def fill_remaining_space(last_arc: Arc, r_min: float, r_max: float, min_distance
             continue
         
         failureCount = 0
-        last_arc = concentric_arcs[-1]  # Update the last arc
-        filled_space = intersection(poly, unary_union((filled_space, Polygon(last_arc.circle))))  # Merge filled space with new arcs
+        filled_space = intersection(poly, unary_union((filled_space, Polygon(concentric_arcs[-1].circle))))  # Merge filled space with new arcs
         arcs.extend(concentric_arcs)  # Add new arcs to the list
         
         text = f"Filling remaining space. Iterations: {id}. Arcs this iteration: {len(concentric_arcs)}."
@@ -1329,7 +1367,7 @@ def create_circle_between_angles(center:Point, radius:float, startAngle:float, e
     points = np.column_stack((radius * np.sin(theta) + x, radius * np.cos(theta) + y))  # Compute circle points
     return LineString(points)
 
-def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points: int = 1) -> tuple:
+def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points: int = 1) -> Tuple[NDArray, NDArray, NDArray]:
     """
     Find the point on a given geometry that is farthest away from the boundary of a polygon.
     
@@ -1349,33 +1387,40 @@ def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points:
     """
     if from_geom.is_empty:
         return None, None  # Return None if the input geometry is empty
-    
-    prepare(to_poly.boundary)  # Prepare the polygon boundary for faster distance calculations
 
-    try:
-        coords = points(from_geom.coords)  # Extract points from the geometry's coordinates
-    except NotImplementedError:
-        # Handle MultiLineString by extracting coordinates from each part
-        if isinstance(from_geom, MultiLineString):
-            coords = []
-            for geom in from_geom.geoms:
-                coords.extend(geom.coords)
-            coords = points(coords)
+    coords = points(get_coordinates(from_geom))  # Extract points from the geometry's coordinates
 
     distances = distance(to_poly.boundary, coords)  # Calculate distances from each point to the polygon's boundary
     farthest_points = []
     longest_distances = []
-    # Get indices sorted by descending distances
-    sorted_indices = np.argsort(distances)[::-1]
-
-    # Select top 'number_of_points' indices
-    top_indices = sorted_indices[:number_of_points]
+    # Get the top indices sorted by descending distances
+    top_indices = np.argsort(distances, kind='heapsort')[:-(number_of_points + 1):-1]
 
     # Retrieve the longest distances and farthest points
     longest_distances = distances[top_indices]
     farthest_points = coords[top_indices]
+
+    bisector_vectors = []
+    for id in top_indices:
+        p0, p1, p2 = coords[id], coords[id-1], coords[(id+1)%len(coords)]
+        v_a = np.array([p1.x - p0.x, p1.y - p0.y])
+        v_b = np.array([p2.x - p0.x, p2.y - p0.y])
+        bisector_vectors.append(get_angle_bisector(v_a, v_b))
     
-    return farthest_points, longest_distances
+    return farthest_points, longest_distances, bisector_vectors
+
+def get_angle_bisector(vec_a, vec_b):
+    """Calculates the normalized angle bisector."""
+    len_vec_a = np.linalg.norm(vec_a)
+    len_vec_b = np.linalg.norm(vec_b)
+    if len_vec_a == 0 or len_vec_b == 0:
+        return np.array([0, 0])
+    unit_a = vec_a / len_vec_a
+    unit_b = vec_b / len_vec_b
+
+    bisector_direction = unit_a + unit_b
+
+    return bisector_direction / np.linalg.norm(bisector_direction)
 
 def move_toward_point(start_point: Point, target_point: Point, distance: float, angle_correction: float = 0.0) -> Point:
     """Move a point by a set distance toward another point and adjust the angle direction"""
@@ -1412,22 +1457,6 @@ def move_toward_point(start_point: Point, target_point: Point, distance: float, 
     
     # Return the new point
     return Point(new_x, new_y)
-
-# def redistribute_vertices(geom: LineString, dist: float) -> LineString:  # TODO: consider shapely's segmentize(geometry, max_segment_length, ...)
-#     """Redistribute vertices of a LineString or MultiLineString at a specified distance."""
-#     if geom.geom_type == 'LineString':
-#         num_vert = ceil(geom.length / dist)  # Calculate number of vertices
-#         if num_vert == 0:
-#             num_vert = 1  # Ensure at least one vertex
-#         return LineString(
-#             [geom.interpolate(float(n) / num_vert, normalized=True)  # Interpolate vertices
-#              for n in range(num_vert + 1)])
-#     elif geom.geom_type == 'MultiLineString':
-#         parts = [redistribute_vertices(part, dist) for part in geom.geoms]  # Recursively process each part
-#         return type(geom)([p for p in parts if not p.is_empty])  # Filter out empty parts
-#     else:
-#         warnings.warn('unhandled geometry %s', (geom.geom_type,))  # Warn for unsupported geometry types
-#         return geom
 
 def generateMultipleConcentricArcs(startpt: Point, rMin: float, rMax: float, basePoly: Polygon, remainingSpace: Polygon, kwargs={}) -> list:
     """Generate concentric arcs within a given range of the radius and boundary."""
@@ -1545,7 +1574,7 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
                 key = key.strip()
                 value = value.strip()
                 internal_key = _SLICER_SETTINGS_MAP.get(slicer).get(key)
-                if internal_key:
+                if internal_key and value:
                     try:
                         gCodeSettingDict[internal_key] = literal_eval(value)
                     except:
@@ -1567,9 +1596,10 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
                     warnings.warn(message=f"{key} was specified as tuple/list, this is normal for using multiple extruders. For all list values First values will be used. If unhappy: Add manual fallback value by searching for ADD FALLBACK in the code. And add 'Fallback_<key>:<yourValue>' into the dictionary.")
                     isWarned = True
 
-    # Handle percentage-based perimeter extrusion width (credit: 5axes via GitHub)
-    if "%" in str(gCodeSettingDict.get("perimeter_extrusion_width")):
-        gCodeSettingDict["perimeter_extrusion_width"] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%")) / 100)
+    # Handle percentage-based extrusion width/spacing
+    for s in ("perimeter_extrusion_width", "solid_infill_extrusion_width", "infill_extrusion_width", "extrusion_width"):
+        if "%" in str(gCodeSettingDict.get(s)):
+            gCodeSettingDict[s] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get(s).strip("%")) / 100)
 
     return gCodeSettingDict
 
@@ -1747,6 +1777,14 @@ if __name__ == "__main__":
     skipInput = args.skip_input or platform.system() != "Windows"
 
     # Call the main function with the arguments
-    main(gCodeFileStream, path2GCode, json_settings)
-    if not skipInput:
-        input("Press enter to exit.")
+    exitCode = 0
+    try:
+        main(gCodeFileStream, path2GCode, json_settings)
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Error: {str(e)}.")
+        exitCode = 1
+    finally:
+        if not skipInput:
+            input("Press enter to exit.")
+        sys.exit(exitCode)
