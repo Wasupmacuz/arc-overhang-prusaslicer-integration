@@ -50,6 +50,7 @@ from itertools import chain
 import sys
 import argparse
 import re
+import traceback
 from typing import Any, List, Tuple
 from math import (
     log2,
@@ -75,6 +76,7 @@ from shapely import (
     covers,
     difference,
     get_coordinates,
+    make_valid,
     points,
     prepare,
     destroy_prepared,
@@ -86,6 +88,7 @@ from shapely import (
     segmentize
 )
 from shapely.geometry.base import GeometrySequence
+from shapely.lib import is_empty
 from shapely.ops import linemerge, unary_union
 from shapely.strtree import STRtree
 import matplotlib.pyplot as plt
@@ -206,6 +209,7 @@ Translates the settings from the slicer in use to the value used by PrusaSlicer.
 - Slicer name:
     - Key (left side of ':') the name used by the new slicer.
     - Value (right side of ':') the name used by PrusaSlicer.
+    Note that this is opposite from _EQUVALENT_NAMES.
 """
 _SLICER_SETTINGS_MAP = {
     'PrusaSlicer': {
@@ -255,7 +259,7 @@ Translates the slicer's GCode annotations to those used by PrusaSlicer.
 - Slicer name:
     - Key (left side of ':') is the name in PrusaSlicer.
     - Value (right side of ':') is the name is the new slicer.
-Note that this is opposite from _SLICER_SETTINGS_MAP.
+    Note that this is opposite from _SLICER_SETTINGS_MAP.
 """
 _EQUIVALENT_NAMES = {
     "PrusaSlicer": {
@@ -279,7 +283,7 @@ _EQUIVALENT_NAMES = {
     # Add mappings for other slicers
 }
 def getSlicerSpecificName(name: str):
-    if slicer == "PrusaSlicer":  # No need to map in this case, but the mapping is left to help contributors translate their own slicer.
+    if slicer == "PrusaSlicer":  # No need to map in this case, but the mapping above is left to help contributors translate their own slicer.
         return name
     return _EQUIVALENT_NAMES.get(slicer).get(name, name)
 
@@ -297,14 +301,15 @@ def main(gCodeFileStream, path2GCode) -> None:
         input("Can not run script, gcode unmodified. Press enter to close.")
         raise ValueError("Incompatible Settings used!")
     
+    # Initialize variables
     layerobjs = []
     gcodeWasModified = False
     numOverhangs = 0
+    lastfansetting = 0
     
     layers = splitGCodeIntoLayers(gcode=gCodeLines)
     gCodeFileStream.close()
     print("layers:", len(layers))
-    lastfansetting = 0  # Initialize variable
     
     for idl, layerlines in enumerate(layers):
         layer = Layer(layerlines, parameters, idl)
@@ -688,7 +693,7 @@ class Layer():
         self.polys=[]
         self.validpolys=[]
         self.indexedValidPolys=STRtree([])
-        self.extPerimeterPolys=[]
+        self.extPerimeterPolys: List[Polygon]=[]
         self.failedArcGenPolys=[]
         self.failedSolidInfillLocations=[]
         self.binfills=[]
@@ -805,6 +810,12 @@ class Layer():
             for poly2 in self.extPerimeterPolys:
                 if poly1==poly2 or poly1 in holesToRemove or poly2 in holesToRemove:
                     continue
+                if not poly1.is_valid:
+                    make_valid(poly1)
+                if not poly2.is_valid:
+                    make_valid(poly2)
+                if not poly1.is_valid or not poly2.is_valid:
+                    continue
                 if covers(poly1, poly2):
                     poly1 = difference(poly1, poly2)
                     holesToRemove.append(poly2)
@@ -854,7 +865,7 @@ class Layer():
                 if kwargs.get("plotStart"):
                     print("Geom-Type:", poly.geom_type)
                     plot_geometry(poly, color="b")
-                    plot_geometry(ep, 'g')
+                    plot_geometry(ep, color='g', filled=True)
                     plot_geometry(startLineString, color="m")
                     plt.title("Start-Geometry")
                     plt.legend(["Poly4ArcOverhang", "External Perimeter prev Layer", "StartLine for Arc Generation"])
@@ -1080,11 +1091,11 @@ class Layer():
                         break
                 if not verified and self.parameters.get("ReplaceInternalBridging"):
                     for intersectId in extOverlappers:
-                        if intersects(indexedExtPerimeters.geometries[intersectId], poly) and not covers(indexedExtPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an edge
+                        if intersects(indexedExtPerimeters.geometries[intersectId], poly) and not covered_by(indexedExtPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an edge
                             verified = True
                             break
                     for intersectId in overIntersectors:
-                        if intersects(poly, prevIndexedOverhangPerimeters.geometries[intersectId]) and not covers(prevIndexedOverhangPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an overhang
+                        if intersects(poly, prevIndexedOverhangPerimeters.geometries[intersectId]) and not covered_by(prevIndexedOverhangPerimeters.geometries[intersectId], poly):  # Check if this poly hangs over an overhang
                             verified = True
                             break
                 if verified:
@@ -1476,9 +1487,12 @@ def get_farthest_points(from_geom: Geometry, to_poly: Polygon, number_of_points:
 
 def get_angle_bisector(vec_a, vec_b):
     """Calculates the normalized angle bisector."""
-
-    unit_a = vec_a / np.linalg.norm(vec_a)
-    unit_b = vec_b / np.linalg.norm(vec_b)
+    len_vec_a = np.linalg.norm(vec_a)
+    len_vec_b = np.linalg.norm(vec_b)
+    if len_vec_a == 0 or len_vec_b == 0:
+        return np.array([0, 0])
+    unit_a = vec_a / len_vec_a
+    unit_b = vec_b / len_vec_b
 
     bisector_direction = unit_a + unit_b
 
@@ -1636,7 +1650,7 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
                 key = key.strip()
                 value = value.strip()
                 internal_key = _SLICER_SETTINGS_MAP.get(slicer).get(key)
-                if internal_key:
+                if internal_key and value:
                     try:
                         gCodeSettingDict[internal_key] = literal_eval(value)
                     except:
@@ -1658,9 +1672,10 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
                     warnings.warn(message=f"{key} was specified as tuple/list, this is normal for using multiple extruders. For all list values First values will be used. If unhappy: Add manual fallback value by searching for ADD FALLBACK in the code. And add 'Fallback_<key>:<yourValue>' into the dictionary.")
                     isWarned = True
 
-    # Handle percentage-based perimeter extrusion width (credit: 5axes via GitHub)
-    if "%" in str(gCodeSettingDict.get("perimeter_extrusion_width")):
-        gCodeSettingDict["perimeter_extrusion_width"] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get("perimeter_extrusion_width").strip("%")) / 100)
+    # Handle percentage-based extrusion width/spacing
+    for s in ("perimeter_extrusion_width", "solid_infill_extrusion_width", "infill_extrusion_width", "extrusion_width"):
+        if "%" in str(gCodeSettingDict.get(s)):
+            gCodeSettingDict[s] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get(s).strip("%")) / 100)
 
     return gCodeSettingDict
 
@@ -1838,6 +1853,14 @@ if __name__ == "__main__":
     skipInput = args.skip_input or platform.system() != "Windows"
 
     # Call the main function with the arguments
-    main(gCodeFileStream, path2GCode)
-    if not skipInput:
-        input("Press enter to exit.")
+    exitCode = 0
+    try:
+        main(gCodeFileStream, path2GCode)
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Error: {str(e)}.")
+        exitCode = 1
+    finally:
+        if not skipInput:
+            input("Press enter to exit.")
+        sys.exit(exitCode)
