@@ -105,7 +105,6 @@ max=max
 min=min
 len=len
 
-########## Parameters  - adjust values here as needed ##########
 def makeFullSettingDict(jsonSettingDict: dict, gCodeSettingDict: dict) -> dict:
     """Merge two dictionaries"""
 
