@@ -46,6 +46,7 @@ KNOWN ISSUES:
 """
 
 #!/usr/bin/python
+from itertools import chain
 import sys
 import argparse
 import re
@@ -134,8 +135,8 @@ def makeFullSettingDict(gCodeSettingDict: dict) -> dict:
         "HilbertFillingPercentage": 100,  # Infill percentage of the massive layers with special cooling.
         "HilbertInfillExtrusionMultiplier": 1.05, # Multiplies how much filament will be extruded while printing Hilbert curves.
         "HilbertTravelEveryNSeconds": 6,  # When N seconds are driven, it will continue printing somewhere else (very rough approx).
-        "MinArea": 0,  # Minimum overhang area to generate arcs. Unit: mm²
-        "MinBridgeLength": 0,  # Minimum bridge length to generate arcs. Unit: mm
+        "MinArea": 5,  # Minimum overhang area to generate arcs. Unit: mm²
+        "MinBridgeLength": 5,  # Minimum bridge length to generate arcs. Unit: mm
         "MinDistanceFromPerimeter": 1 * gCodeSettingDict.get("extrusion_width"),  # Control how much bumpiness you allow between arcs and perimeter. Lower will follow perimeter better, but create a lot of very small arcs. Should be more than 1 Arc width! Unit: mm
         "MinStartArcs": 2,  # How many arcs shall be generated in the first step
         "Path2Output": r"",  # Leave empty to overwrite the file or write to a new file. Full path required.
@@ -459,6 +460,7 @@ def main(gCodeFileStream, path2GCode) -> None:
                 isInjected = False
                 hilbertIsInjected = False
                 curPrintSpeed = "G1 F600"
+                curPrintSpeedVal = 600
                 messedWithSpeed = False
                 messedWithFan = False
                 if gcodeWasModified:
@@ -508,13 +510,25 @@ def main(gCodeFileStream, path2GCode) -> None:
                                     modifiedlayer.lines.append(retractGCode(retract=False, kwargs=parameters))  # Extrude
                                     break
                     if "G1 F" in line.split(";", 1)[0]:  # Special block-speed-command
-                        curPrintSpeed = line
-                    if layer.exportThisLine(idline - 1):  # Subtract 1 because there's a disconnect between line IDs here and line IDs when calculating which lines to delete. Should fix TODO
-                        if layer.isClose2Bridging(line, parameters.get("CoolingSettingDetectionDistance")):
+                        curPrintSpeed: str = line
+                        curPrintSpeedVal = float(curPrintSpeed[4:])
+                    if layer.exportThisLine(idline - 1):  # Subtract 1 because there's a disconnect between line IDs here and line IDs when calculating which lines to delete (TODO fix)
+                        close, distance_to_arc = layer.dist2Bridging(line, parameters.get("CoolingSettingDetectionDistance", 3))
+                        if close:  # Ensure we have a valid point and arcs exist
+                            # Determine new print speed based on distance
+                            new_speed = compute_print_speed(
+                                distance_to_arc,
+                                parameters.get("aboveArcsPerimeterPrintSpeed"),  # Slowest speed near arcs
+                                curPrintSpeedVal,  # Normal speed
+                                parameters.get("CoolingSettingDetectionDistance", 3)  # Max distance for speedup
+                            )
+
                             if not messedWithFan:
                                 modifiedlayer.lines.append(f"M106 S{parameters.get('aboveArcsFanSpeed')}\n")
                                 messedWithFan = True
-                            modline = line.strip("\n") + f" F{parameters.get('aboveArcsPerimeterPrintSpeed')}\n"
+
+                            # Modify line to include adjusted speed
+                            modline = line.strip("\n") + f" F{new_speed:.2f} ; Near arc speed: {100*(new_speed / float(curPrintSpeedVal)):.1f}%\n"
                             modifiedlayer.lines.append(modline)
                             messedWithSpeed = True
                         else:
@@ -1214,15 +1228,19 @@ class Layer():
         
         return compositeList
 
-    def isClose2Bridging(self, line: str, maxDetectionDistance: float = 3) -> bool:
-        """Check if a G-code line is close to a bridging area."""
+    def dist2Bridging(self, line: str, maxDetectionDistance: float = 3) -> Tuple[bool, float]:
+        """Check a G-code line's distance to a bridging area."""
         if not "G1" in line:
-            return False  # Skip non-G1 lines
+            return False, maxDetectionDistance  # Skip non-G1 lines
         p = getPtfromCmd(line)
         if not p:
-            return False  # Skip if no point is extracted
-        distances = self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1] # Return all distances to polygons that may be in the detection distance
-        return any(dist <= maxDetectionDistance for dist in distances) # Return True if any distance is within the threshold
+            return False, maxDetectionDistance  # Skip if no point is extracted
+        distances = self.indexedOldPolys.query_nearest(p, max_distance=maxDetectionDistance, return_distance=True)[1]
+        if distances.size > 0:
+            distance = min(distances) # Return all distances to polygons that may be in the detection distance
+            if distance < maxDetectionDistance:
+                return True, distance # Return shortest distance within the threshold
+        return False, maxDetectionDistance
 
     def spotFanSetting(self, lastfansetting: float) -> float:
         """Find and return the fan setting (M106) from the G-code lines."""
@@ -1660,6 +1678,19 @@ def readSettingsFromGCode2dict(gcodeLines: list, fallbackValuesDict: dict) -> di
             gCodeSettingDict[s] = gCodeSettingDict.get("nozzle_diameter", 0.4) * (float(gCodeSettingDict.get(s).strip("%")) / 100)
 
     return gCodeSettingDict
+
+def compute_print_speed(distance, min_speed, max_speed, max_distance):
+    """
+    Interpolates quadratically between min_speed and max_speed based on distance.
+    - distance: the measured distance from the arc boundary.
+    - min_speed: the speed to use when distance is 0 or very close.
+    - max_speed: the normal print speed (when distance >= max_distance).
+    - max_distance: the distance at which normal speed is reached.
+    """
+    if distance >= max_distance:
+        return max_speed
+    else:
+        return min_speed + (max_speed - min_speed) * (distance*distance / float(max_distance*max_distance))
 
 def checkforNecesarrySettings(gCodeSettingDict: dict) -> bool:
     """Check if necessary slicer settings are enabled for the script to work."""
