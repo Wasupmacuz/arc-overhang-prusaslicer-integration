@@ -1,0 +1,220 @@
+/* Main Window */
+QMainWindow {
+    background-color: #2b2b2b; /* Dark background for the main window */
+    color: #ffffff;           /* Default text color */
+    border: none;
+}
+
+QWidget {
+    background-color: #222222;
+}
+
+/* Push Buttons */
+QPushButton {
+    background-color: #3c3f41; /* Dark gray background */
+    border: 1px solid #5a5a5a; /* Subtle border */
+    border-radius: 5px;        /* Rounded corners */
+    color: #ffffff;            /* White text */
+    padding: 8px 15px;         /* Padding for size */
+    font-size: 14px;           /* Font size */
+}
+
+QPushButton:hover {
+    background-color: #505355; /* Slightly lighter on hover */
+    border: 1px solid #808080;
+}
+
+QPushButton:pressed {
+    background-color: #2c2c2c; /* Darker when pressed */
+}
+
+/* Checkbox */
+QCheckBox {
+    spacing: 5px;                   /* Space between the checkbox and label */
+    color: #ffffff;                 /* Label color */
+    font-size: 14px;                /* Font size for labels */
+}
+
+/* Checkbox Indicator (Unchecked) */
+QCheckBox::indicator {
+    width: 16px;                    /* Size of the checkbox */
+    height: 16px;
+    background-color: #2b2b2b;      /* Background color for the checkbox */
+    border: 1px solid #5a5a5a;      /* Border color */
+    border-radius: 3px;             /* Optional rounded corners */
+}
+
+/* Checkbox Indicator (Checked) */
+QCheckBox::indicator:checked {
+    background-color: #00aaff;      /* Color for checked state */
+    border: 1px solid #5a5a5a;      /* Border color */
+}
+
+/* Checkbox Indicator (Hover) */
+QCheckBox::indicator:hover {
+    background-color: #3c3f41;      /* Slightly lighter on hover */
+    border: 1px solid #00aaff;      /* Bright border on hover */
+}
+
+/* Checkbox Indicator (Disabled) */
+QCheckBox::indicator:disabled {
+    background-color: #444444;      /* Gray background for disabled */
+    border: 1px solid #666666;      /* Border for disabled */
+}
+
+/* Combo Boxes */
+QComboBox {
+    background-color: #3c3f41;
+    color: #ffffff;
+    border: 1px solid #5a5a5a;
+    border-radius: 5px;
+    padding: 5px;
+    font-size: 14px;
+}
+
+QComboBox:hover {
+    border: 1px solid #00aaff;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #3c3f41;
+    border: 1px solid #5a5a5a;
+    selection-background-color: #00aaff;
+    selection-color: #ffffff;
+}
+
+/* Sliders */
+QSlider::groove:horizontal {
+    background: #5a5a5a;
+    height: 8px;
+    border-radius: 4px;
+}
+
+QSlider::handle:horizontal {
+    background: #00aaff;
+    border: 1px solid #5a5a5a;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    margin: -3px 0;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #0088cc;
+}
+
+/* Scroll Area */
+QScrollArea {
+    border: none;
+}
+
+QScrollBar:vertical {
+    border: none;
+    background: #2b2b2b;
+    width: 12px;
+    margin: 0px 0px 0px 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #505355;
+    border-radius: 6px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #00aaff;
+}
+
+/* Line Edits */
+QLineEdit {
+    background-color: #3c3f41;
+    color: #ffffff;
+    border: 1px solid #5a5a5a;
+    border-radius: 5px;
+    padding: 5px;
+    font-size: 14px;
+}
+
+QLineEdit:focus {
+    border: 1px solid #00aaff;
+}
+
+/* Group Boxes */
+QGroupBox {
+    background-color: #2b2b2b;
+    border: 1px solid #5a5a5a;
+    border-radius: 5px;
+    margin-top: 20px;
+    padding: 10px;
+    font-size: 14px;
+    color: #ffffff;
+}
+
+/* GroupBox Title */
+QGroupBox::title {
+    subcontrol-origin: margin;
+    color: #ffffff;
+}
+
+/* Table Widgets */
+/* Table Widget */
+QTableWidget, QTableView {
+    background-color: #2b2b2b; /* Dark background for the table */
+    color: #ffffff;            /* White text for cells */
+    border: 1px solid #5a5a5a; /* Subtle border around the table */
+    gridline-color: #5a5a5a;   /* Gridlines matching the theme */
+    selection-background-color: #00aaff; /* Highlight selected rows */
+    selection-color: #ffffff;  /* Text color in selected cells */
+}
+
+/* Horizontal Header */
+QHeaderView::section {
+    background-color: #3c3f41; /* Dark gray background for headers */
+    color: #ffffff;            /* White text for headers */
+    padding: 5px;              /* Padding inside header cells */
+    border: 1px solid #5a5a5a; /* Subtle border between headers */
+    font-size: 14px;           /* Header font size */
+}
+
+/* Vertical Header */
+QHeaderView {
+    background-color: #3c3f41; /* Match horizontal header */
+    color: #ffffff;            /* White text for the vertical header */
+    border: none;              /* Remove the outer border */
+}
+
+QHeaderView::section:hover {
+    background-color: #505355; /* Slightly lighter on hover */
+}
+
+QHeaderView::section:pressed {
+    background-color: #2c2c2c; /* Darker when pressed */
+}
+
+QTableCornerButton::section {
+    background-color: #3c3f41; /* Match the header background */
+    border: 1px solid #5a5a5a; /* Match the header border */
+}
+
+
+/* Matplotlib Canvas */
+QWidget#matplotlibCanvas {
+    background-color: #2b2b2b; /* Matches main background */
+}
+
+/* Toolbar */
+QToolBar {
+    background-color: #3c3f41;
+    border: none;
+}
+
+QToolBar QToolButton {
+    background-color: transparent;
+    color: #ffffff;
+    border: none;
+}
+
+QToolBar QToolButton:hover {
+    background-color: #505355;
+}
+

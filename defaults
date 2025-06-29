@@ -1,0 +1,337 @@
+{
+    "General Settings": {
+        "Path2Output": {
+            "value": "C:/Users/default.CC09962/Downloads/output.gcode",
+            "description": "Leave empty to overwrite the file or write to a new file. Full path required.",
+            "name": "Output Path"
+        },
+        "TimeLapseEveryNArcs": {
+            "value": 0,
+            "description": "Deactivate with 0, inserts M240 after N ArcLines, 5 is a good value to start.",
+            "name": "Time Lapse Every N Arcs",
+            "min": 0,
+            "max": 100
+        }
+    },
+    "General Arc Settings": {
+        "AllowedArcRetries": {
+            "value": 0,
+            "description": "Tries a slightly different point if arc generation fails. Limited to this number of tries.",
+            "name": "Allowed Arc Retries",
+            "min": 0,
+            "max": 100
+        },
+        "AllowedSpaceForArcs": {
+            "value": [[0.0, 0.0], [500.0, 0.0], [500.0, 500.0], [0.0, 500.0]],
+            "description": "Control in which areas Arcs shall be generated.",
+            "name": "Allowed Space for Arcs"
+        },
+        "CheckForAllowedSpace": {
+            "value": false,
+            "description": "Use the above x&y filter or not",
+            "name": "Check for Allowed Space"
+        },
+        "ArcCenterOffset": {
+            "value": 0.6,
+            "description": "Unit: mm, prevents very small Arcs by hiding the center in not printed section. Make 0 to get into tricky spots with smaller arcs.",
+            "name": "Arc Center Offset",
+            "min": 0.0,
+            "max": 5.0,
+            "step_size": 0.01
+        },
+        "ArcFanSpeed": {
+            "value": 255,
+            "description": "The speed of the fan while printing arcs. Cooling to full blast = 255.",
+            "name": "Arc Fan Speed",
+            "min": 0,
+            "max": 255
+        },
+        "ArcMinPrintSpeed": {
+            "value": 30.0,
+            "description": "The minimum speed arcs will print. Unit: mm/min.",
+            "name": "Arc Minimum Print Speed",
+            "min": 5.0,
+            "max": 200.0,
+            "step_size": 0.1
+        },
+        "ArcPrintSpeed": {
+            "value": 90.0,
+            "description": "The speed arcs will try to print. Unit: mm/min.",
+            "name": "Arc Print Speed",
+            "min": 0.0,
+            "max": 200.0,
+            "step_size": 0.1
+        },
+        "ArcSlowDownBelowThisDuration": {
+            "value": 3.0,
+            "description": "Arc Time below this Duration => slow down, Unit: sec",
+            "name": "Arc Slow Down Below This Duration",
+            "min": 0.0,
+            "max": 10.0,
+            "step_size": 0.01
+        },
+        "ArcPointsPerMillimeter": {
+            "value": 10.0,
+            "description": "Higher will slow down the code but give better support for following arcs. Recommended values: >=10 when 'UseLeastAmountOfCenterPoints': False; else, value can be as low as 1.",
+            "name": "Arc Points Per Millimeter",
+            "min": 1.0,
+            "max": 100.0,
+            "step_size": 0.1
+        },
+        "ArcTravelFeedRate": {
+            "value": 1800.0,
+            "description": "Slower travel speed while printing arcs, Unit: mm/min",
+            "name": "Arc Travel Feed Rate",
+            "min": 1000.0,
+            "max": 5000.0,
+            "step_size": 0.1
+        },
+        "ArcWidth": {
+            "value": 0.38,
+            "description": "Change the spacing between the arcs, should be around nozzle_diameter.",
+            "name": "Arc Width",
+            "min": 0.1,
+            "max": 2.0,
+            "step_size": 0.01
+        },
+        "ExtendArcDist": {
+            "value": 0.4,
+            "description": "Extend Arcs perpendicularly for better bonding between them. Unit: mm",
+            "name": "Extend Arc Distance",
+            "min": 0.0,
+            "max": 5.0,
+            "step_size": 0.01
+        },
+        "ExtendArcsIntoPerimeter": {
+            "value": 0.21,
+            "description": "Min = 0.5 extrusion width!, extends the Area for arc generation, put higher to go through small passages. Unit: mm",
+            "name": "Extend Arcs into Perimeter",
+            "min": 0.0,
+            "max": 5.0,
+            "step_size": 0.01
+        },
+        "GCodeArcPtMinDist": {
+            "value": 0.1,
+            "description": "Min distance between points on the Arcs to form separate GCode Command. Unit: mm",
+            "name": "GCode Arc Point Minimum Distance",
+            "min": 0.0,
+            "max": 5.0,
+            "step_size": 0.01
+        },
+        "MinArea": {
+            "value": 0.0,
+            "description": "Minimum overhang area to generate arcs. Unit: mm²",
+            "name": "Minimum Overhang Area",
+            "min": 0.0,
+            "max": 10000.0,
+            "step_size": 0.1
+        },
+        "MinBridgeLength": {
+            "value": 0.0,
+            "description": "Minimum bridge length to generate arcs. Unit: mm",
+            "name": "Minimum Bridge Length",
+            "min": 0.0,
+            "max": 1000.0,
+            "step_size": 0.1
+        },
+        "MinDistanceFromPerimeter": {
+            "value": 0.42,
+            "description": "Control how much bumpiness you allow between arcs and perimeter. Lower will follow perimeter better, but create a lot of very small arcs. Should be more than 1 Arc width! Unit: mm",
+            "name": "Minimum Distance from Perimeter",
+            "min": 0.0,
+            "max": 5.0,
+            "step_size": 0.01
+        },
+        "MinStartArcs": {
+            "value": 2,
+            "description": "How many arcs shall be generated in the first step",
+            "name": "Minimum Start Arcs",
+            "min": 1,
+            "max": 20
+        },
+        "RMax": {
+            "value": 40.0,
+            "description": "The max radius of the arcs.",
+            "name": "Maximum Arc Radius",
+            "min": 2.0,
+            "max": 500.0,
+            "step_size": 0.1
+        },
+        "ReplaceInternalBridging": {
+            "value": false,
+            "description": "If true, will replace bridging that goes over external perimeters but does not have overhang perimeters nearby.",
+            "name": "Replace Internal Bridging"
+        },
+        "UseLeastAmountOfCenterPoints": {
+            "value": false,
+            "description": "Always generates arcs until rMax is reached, divide the arcs into pieces if needed. Reduces the amount of center points.",
+            "name": "Use Least Amount of Center Points"
+        }
+    },
+    "General Hilbert Settings": {
+        "ExtendHilbertIntoPerimeter": {
+            "value": 0.0,
+            "description": "Extends the Area for Hilbert curve generation, put higher to go through small passages. Unit: mm",
+            "name": "Extend Hilbert into Perimeter",
+            "min": 0.0,
+            "max": 10.0,
+            "step_size": 0.01
+        },
+        "HilbertFillingPercentage": {
+            "value": 100.0,
+            "description": "Infill percentage of the massive layers with special cooling.",
+            "name": "Hilbert Filling Percentage",
+            "min": 0.0,
+            "max": 100.0,
+            "step_size": 0.1
+        },
+        "HilbertInfillExtrusionMultiplier": {
+            "value": 1.05,
+            "description": "Multiplies how much filament will be extruded while printing Hilbert curves.",
+            "name": "Hilbert Infill Extrusion Multiplier",
+            "min": 1.0,
+            "max": 2.0,
+            "step_size": 0.01
+        },
+        "HilbertTravelEveryNSeconds": {
+            "value": 6.0,
+            "description": "When N seconds are driven, it will continue printing somewhere else (very rough approx).",
+            "name": "Hilbert Travel Every N Seconds",
+            "min": 1,
+            "max": 100.0,
+            "step_size": 0.1
+        },
+        "aboveArcsFanSpeed": {
+            "value": 25,
+            "description": "Infill fan speed above arcs. 0 -> 255, 255 = 100%",
+            "name": "Above Arcs Infill Fan Speed",
+            "min": 0,
+            "max": 255
+        },
+        "applyAboveFanSpeedToWholeLayer": {
+            "value": true,
+            "description": "Should the fan speed be applied to the entire layer or not?",
+            "name": "Apply Above Fan Speed to Whole Layer"
+        },
+        "aboveArcsInfillPrintSpeed": {
+            "value": 600,
+            "description": "Infill print speed above arc layers. Unit: mm/min",
+            "name": "Above Arcs Infill Print Speed",
+            "min": 0,
+            "max": 1000
+        },
+        "aboveArcsPerimeterFanSpeed": {
+            "value": 25,
+            "description": "Perimeter fan speed above arcs. 0 -> 255, 255 = 100%",
+            "name": "Above Arcs Perimeter Fan Speed",
+            "min": 0,
+            "max": 255
+        },
+        "aboveArcsPerimeterPrintSpeed": {
+            "value": 180,
+            "description": "Perimeter print speed above arc layers. Unit: mm/min",
+            "name": "Above Arcs Perimeter Print Speed",
+            "min": 0,
+            "max": 1000
+        },
+        "CoolingSettingDetectionDistance": {
+            "value": 5.0,
+            "description": "If the GCode line is closer than this distance to an infill polygon, the cooling settings will be applied. Unit: mm",
+            "name": "Cooling Setting Detection Distance",
+            "min": 0.0,
+            "max": 10.0,
+            "step_size": 0.01
+        },
+        "doSpecialCooling": {
+            "value": false,
+            "description": "Use to enable/disable Hilbert curves and slower movement above arc overhangs. Should be `True` to prevent warping",
+            "name": "Do Special Cooling"
+        },
+        "specialCoolingZdist": {
+            "value": 0.0,
+            "description": "Use the special cooling XX mm above the arcs.",
+            "name": "Special Cooling Z Distance",
+            "min": 0.0,
+            "max": 100.0,
+            "step_size": 0.1
+        }
+    },
+    "Advanced Settings": {
+        "ArcExtrusionMultiplier": {
+            "value": 1.35,
+            "description": "Multiplies how much filament will be extruded while printing arcs.",
+            "name": "Arc Extrusion Multiplier",
+            "min": 1.0,
+            "max": 2.0,
+            "step_size": 0.01
+        },
+        "CornerImportanceMultiplier": {
+            "value": 0.0,
+            "description": "Startpoint for Arc generation is chosen close to the middle of the StartLineString and at a corner. Higher => Corner selection more important.",
+            "name": "Corner Importance Multiplier",
+            "min": 0.0,
+            "max": 10.0,
+            "step_size": 0.1
+        },
+        "DistanceBetweenPointsOnStartLine": {
+            "value": 0.1,
+            "description": "Used for redistribution, if start fails.",
+            "name": "Distance Between Points on Start Line",
+            "min": 0.01,
+            "max": 2.0,
+            "step_size": 0.01
+        },
+        "SafetyBreak_MaxArcNumber": {
+            "value": 2000,
+            "description": "Max Number of Arc Start Points. Prevents While loop from running forever.",
+            "name": "Safety Break Max Arc Number",
+            "min": 500,
+            "max": 10000
+        }
+    },
+    "Debug Settings": {
+        "plotArcsEachStep": {
+            "value": false,
+            "description": "Plot arcs for every filled polygon. Use for debugging.",
+            "name": "Plot Arcs Each Step"
+        },
+        "plotArcsFinal": {
+            "value": false,
+            "description": "Plot arcs for every filled polygon, when completely filled. Use for debugging.",
+            "name": "Plot Arcs Final"
+        },
+        "plotDetectedInfillPoly": {
+            "value": false,
+            "description": "Plot each detected overhang polygon. Use for debugging.",
+            "name": "Plot Detected Infill Polygon"
+        },
+        "plotDetectedSolidInfillPoly": {
+            "value": false,
+            "description": "Plot each solid infill polygon. Use for debugging.",
+            "name": "Plot Detected Solid Infill Polygon"
+        },
+        "plotEachHilbert": {
+            "value": false,
+            "description": "Plot each generated Hilbert curve. Use for debugging.",
+            "name": "Plot Each Hilbert"
+        },
+        "plotStart": {
+            "value": false,
+            "description": "Plot the detected geometry in the previous layer and the StartLine for Arc-Generation. Use for debugging.",
+            "name": "Plot Start"
+        },
+        "PrintDebugVerification": {
+            "value": false,
+            "description": "Used for console logging of the process.",
+            "name": "Print Debug Verification"
+        },
+        "WarnBelowThisFillingPercentage": {
+            "value": 90.0,
+            "description": "Fill the overhang at least XX%, else don't replace overhang. Easier detection of errors in small/delicate areas. Unit: Percent",
+            "name": "Warning Below Filling Percentage",
+            "min": 0.0,
+            "max": 100.0,
+            "step_size": 0.01
+        }
+    }
+}
